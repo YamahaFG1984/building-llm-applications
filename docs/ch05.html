@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 5 章 · 用 LangGraph 构建智能体工作流 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="5">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 5 章</span>
+<h1>用 LangGraph 构建智能体工作流</h1>
+<p class="lede">
+  上一章的研究引擎是一条直线：不管搜回来的东西好不好，都会一路走到写报告。
+  这一章给它加上「<strong>检查一下，不行就重来</strong>」的能力。链做不到回头，所以我们换一种更强的结构：<strong>图</strong>。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>分清「工作流」和「智能体」这两个常被混用的词</li>
+    <li>掌握 LangGraph 的四个核心概念：状态、节点、边、条件边</li>
+    <li>把第 4 章的链式研究引擎改造成图</li>
+    <li>加入相关性评估和重试循环</li>
+    <li>知道什么时候该用链，什么时候该用图</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="wf-vs-agent">工作流与智能体</h2>
+
+<p>这两个词经常被混着用，但区别很重要：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="工作流走预先画好的路线，智能体自己决定调用哪些工具以及顺序">
+  <rect class="bx-d" x="12" y="12" width="736" height="140" rx="10"/>
+  <text class="ttl on-b" x="28" y="36">工作流 Workflow</text>
+  <text class="sm" x="150" y="36">路线是程序员预先画好的，LLM 只在岔路口做选择题</text>
+  <rect class="bx" x="28" y="76" width="70" height="44" rx="8"/><text class="lbl" x="63" y="103" text-anchor="middle">用户</text>
+  <rect class="bx-b" x="134" y="76" width="96" height="44" rx="8"/><text class="lbl on-b" x="182" y="103" text-anchor="middle">① 路由器</text>
+  <rect class="bx" x="290" y="52" width="150" height="38" rx="8"/><text class="lbl" x="365" y="76" text-anchor="middle">②a 文本转 SQL</text>
+  <rect class="bx" x="290" y="102" width="150" height="38" rx="8"/><text class="lbl" x="365" y="126" text-anchor="middle">②b 文本转 API 调用</text>
+  <rect class="bx-g" x="500" y="76" width="120" height="44" rx="8"/><text class="lbl on-g" x="560" y="103" text-anchor="middle">③ 汇总答案</text>
+  <rect class="bx" x="660" y="76" width="70" height="44" rx="8"/><text class="lbl" x="695" y="103" text-anchor="middle">④ 答案</text>
+  <path class="ln" d="M100 98 H130" marker-end="url(#ar)"/>
+  <path class="ln-b" d="M232 90 L286 74" marker-end="url(#ar-b)"/><path class="ln-b" d="M232 106 L286 120" marker-end="url(#ar-b)"/>
+  <path class="ln" d="M442 72 L496 90" marker-end="url(#ar)"/><path class="ln" d="M442 120 L496 106" marker-end="url(#ar)"/>
+  <path class="ln" d="M622 98 H656" marker-end="url(#ar)"/>
+  <text class="sm on-b" x="246" y="62" text-anchor="middle">二选一</text>
+
+  <rect class="bx-d" x="12" y="172" width="736" height="146" rx="10"/>
+  <text class="ttl on-a" x="28" y="196">智能体 Agent</text>
+  <text class="sm" x="134" y="196">没有预设路线，LLM 根据现状决定下一步用哪个工具，直到它认为任务完成</text>
+  <rect class="bx" x="28" y="238" width="70" height="44" rx="8"/><text class="lbl" x="63" y="265" text-anchor="middle">用户</text>
+  <rect class="bx-a" x="180" y="226" width="190" height="68" rx="12"/>
+  <text class="ttl on-a" x="275" y="254" text-anchor="middle">LLM 决策循环</text>
+  <text class="sm" x="275" y="274" text-anchor="middle">想 → 选工具 → 看结果 → 再想</text>
+  <path class="ln" d="M100 252 H176" marker-end="url(#ar)"/><path class="ln" d="M176 270 H104" marker-end="url(#ar)"/>
+  <rect class="bx" x="470" y="214" width="110" height="34" rx="8"/><text class="sm" x="525" y="236" text-anchor="middle">工具：查数据库</text>
+  <rect class="bx" x="470" y="254" width="110" height="34" rx="8"/><text class="sm" x="525" y="276" text-anchor="middle">工具：调 API</text>
+  <rect class="bx" x="600" y="214" width="130" height="34" rx="8"/><text class="sm" x="665" y="236" text-anchor="middle">工具：搜索向量库</text>
+  <rect class="bx" x="600" y="254" width="130" height="34" rx="8"/><text class="sm" x="665" y="276" text-anchor="middle">工具：……</text>
+  <path class="ln-a" d="M372 250 H466" marker-end="url(#ar-a)" marker-start="url(#ar-a)"/>
+  <text class="sm on-a" x="419" y="242" text-anchor="middle">任意次、任意顺序</text>
+</svg>
+<figcaption>图 5-1　工作流是「选择题」，智能体是「自由发挥」</figcaption>
+</figure>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>工作流（agentic workflow）</th><th>智能体（agent）</th></tr>
+  <tr><td>流程</td><td>固定的步骤和有限的分支</td><td>运行时动态生成</td></tr>
+  <tr><td>LLM 的角色</td><td>在预设选项中做选择</td><td>推理、决策、挑选和组合工具</td></tr>
+  <tr><td>可预测性</td><td>高，容易测试和调试</td><td>低，同一个问题可能走不同路径</td></tr>
+  <tr><td>适合</td><td>流程明确的业务</td><td>开放式、事先无法穷举步骤的任务</td></tr>
+  <tr><td>本教程</td><td><strong>本章</strong></td><td>第 11–14 章</td></tr>
+</table>
+</div>
+
+<p>工作流有两种最常见的模式：</p>
+<ul>
+  <li><strong>路由器（Router）</strong>：LLM 判断请求属于哪一类，转给对应的处理器。</li>
+  <li><strong>控制器 - 工作者（Controller-Worker）</strong>：控制器按一定顺序把任务分派给多个工作者，再汇总结果。</li>
+</ul>
+
+<div class="box tip">
+  <div class="t">&#128161; 先别急着上智能体</div>
+  <p>
+    两者没有清晰的分界线，也没有谁更「高级」。能用工作流解决就用工作流 —— 更便宜、更快、更可控。
+    只有当任务确实需要显式的状态管理和动态决策时，才值得承担智能体带来的额外复杂度。
+    Anthropic 的文章《Building Effective Agents》把这一点讲得很透，推荐一读。
+  </p>
+</div>
+
+<h2 id="why-graph">为什么链不够用了</h2>
+
+<p>链（LCEL）擅长「数据一路往下流」。但遇到下面三种需求就捉襟见肘：</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128256;</span><h4>分支</h4><p>根据中间结果走不同的路。</p></div>
+  <div class="card"><span class="ic">&#128260;</span><h4>循环</h4><p>结果不满意，回到前面某一步重来。</p></div>
+  <div class="card"><span class="ic">&#128230;</span><h4>共享状态</h4><p>后面的步骤想用很早之前产生的数据，不想一路手动传递。</p></div>
+</div>
+
+<p>
+  <strong>LangGraph</strong> 用「图」来解决这三件事。它不是 LangChain 的替代品，而是它的扩展：
+  LangChain 提供零件（模型、提示词、检索器），LangGraph 提供把零件组织成<strong>有状态、可分支、可循环</strong>的流程的图纸。
+</p>
+
+<h2 id="core">LangGraph 的四个核心概念</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="LangGraph 核心概念：状态是共享的记事本，节点读写它，边决定执行顺序，条件边根据状态选择去向">
+  <rect class="bx-p" x="20" y="60" width="200" height="200" rx="12"/>
+  <text class="ttl on-p" x="120" y="86" text-anchor="middle">状态 State</text>
+  <text class="sm" x="120" y="104" text-anchor="middle">所有节点共享的「记事本」</text>
+  <rect class="bx" x="36" y="118" width="168" height="28" rx="5"/><text class="mono" x="46" y="137">user_question</text>
+  <rect class="bx" x="36" y="150" width="168" height="28" rx="5"/><text class="mono" x="46" y="169">search_queries</text>
+  <rect class="bx" x="36" y="182" width="168" height="28" rx="5"/><text class="mono" x="46" y="201">research_summary</text>
+  <rect class="bx" x="36" y="214" width="168" height="28" rx="5"/><text class="mono" x="46" y="233">final_report</text>
+
+  <text class="sm" x="290" y="26">START</text>
+  <path class="ln" d="M332 22 H366" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="370" y="6" width="130" height="36" rx="8"/><text class="lbl on-b" x="435" y="29" text-anchor="middle">节点 A</text>
+  <path class="ln" d="M435 44 V76" marker-end="url(#ar)"/>
+  <text class="sm" x="446" y="64">普通边</text>
+  <rect class="bx-b" x="370" y="80" width="130" height="36" rx="8"/><text class="lbl on-b" x="435" y="103" text-anchor="middle">节点 B</text>
+  <path class="ln" d="M435 118 V146" marker-end="url(#ar)"/>
+  <path class="bx-a" d="M435 150 L520 186 L435 222 L350 186 Z" style="fill:var(--accent-bg)"/>
+  <text class="lbl on-a" x="435" y="184" text-anchor="middle">条件边</text>
+  <text class="sm" x="435" y="200" text-anchor="middle">读状态，选方向</text>
+  <path class="ln-a" d="M522 186 H600 V98 H504" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="610" y="140">不满意：回到 B</text>
+  <path class="ln-g" d="M435 224 V252" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="446" y="242">满意</text>
+  <rect class="bx-g" x="370" y="256" width="130" height="36" rx="8"/><text class="lbl on-g" x="435" y="279" text-anchor="middle">节点 C</text>
+  <path class="ln" d="M502 274 H540" marker-end="url(#ar)"/><text class="sm" x="548" y="278">END</text>
+
+  <path class="ln-p" d="M222 110 H300 V98 H366" marker-end="url(#ar-p)" marker-start="url(#ar-p)"/>
+  <path class="ln-p" d="M222 240 H300 V274 H366" marker-end="url(#ar-p)" marker-start="url(#ar-p)"/>
+  <text class="sm on-p" x="294" y="182" text-anchor="middle">每个节点：</text>
+  <text class="sm on-p" x="294" y="198" text-anchor="middle">读状态 → 干活</text>
+  <text class="sm on-p" x="294" y="214" text-anchor="middle">→ 返回要更新的字段</text>
+</svg>
+<figcaption>图 5-2　状态是记事本，节点是干活的人，边是「干完交给谁」</figcaption>
+</figure>
+
+<dl class="gloss">
+  <dt>状态（State）</dt>
+  <dd>一个有明确字段和类型的数据结构，在整个图里流动。任何节点都能读到里面的所有字段 —— 不用再像链那样把 <code>user_question</code> 一站一站往下传。</dd>
+  <dt>节点（Node）</dt>
+  <dd>一个普通函数：<strong>输入当前状态，返回想要更新的字段</strong>。注意是只返回「变化的部分」，LangGraph 负责把它合并进状态。</dd>
+  <dt>边（Edge）</dt>
+  <dd>规定「A 做完之后轮到 B」。</dd>
+  <dt>条件边（Conditional Edge）</dt>
+  <dd>一个路由函数：读取状态，返回下一个节点的名字。分支和循环全靠它。</dd>
+</dl>
+
+<h3>最小示例</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from typing import TypedDict
+from langgraph.graph import StateGraph, END
+
+class ResearchState(TypedDict):            # ① 定义状态
+    input_query: str
+    final_output: str
+
+def process_node(state: dict) -&gt; dict:     # ② 定义节点：读状态，返回更新
+    result = state["input_query"].upper()
+    return {"final_output": result}
+
+graph = StateGraph(ResearchState)          # ③ 组装
+graph.add_node("process", process_node)
+graph.set_entry_point("process")           #    入口
+graph.add_edge("process", END)             #    出口
+
+app = graph.compile()                      # ④ 编译并运行
+print(app.invoke({"input_query": "hello"}))
+# {'input_query': 'hello', 'final_output': 'HELLO'}
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
+
+const ResearchState = Annotation.Root({      // ① 定义状态
+  input_query: Annotation&lt;string&gt;,
+  final_output: Annotation&lt;string&gt;,
+});
+
+function processNode(state: typeof ResearchState.State) {   // ② 定义节点
+  return { final_output: state.input_query.toUpperCase() };
+}
+
+const app = new StateGraph(ResearchState)    // ③ 组装
+  .addNode("process", processNode)
+  .addEdge(START, "process")                 //    入口
+  .addEdge("process", END)                   //    出口
+  .compile();                                // ④ 编译
+
+console.log(await app.invoke({ input_query: "hello" }));
+// { input_query: 'hello', final_output: 'HELLO' }
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 依赖：org.bsc.langgraph4j:langgraph4j-core
+import org.bsc.langgraph4j.StateGraph;
+import org.bsc.langgraph4j.state.AgentState;
+import static org.bsc.langgraph4j.StateGraph.START;
+import static org.bsc.langgraph4j.StateGraph.END;
+import static org.bsc.langgraph4j.action.AsyncNodeAction.node_async;
+
+class ResearchState extends AgentState {                         // ① 定义状态
+    ResearchState(Map&lt;String, Object&gt; data) { super(data); }
+    String inputQuery() { return this.&lt;String&gt;value("input_query").orElse(""); }
+}
+
+var app = new StateGraph&lt;&gt;(ResearchState::new)                   // ③ 组装
+        .addNode("process", node_async(state -&gt;                  // ② 节点：读状态，返回更新
+                Map.of("final_output", state.inputQuery().toUpperCase())))
+        .addEdge(START, "process")
+        .addEdge("process", END)
+        .compile();                                              // ④ 编译
+
+System.out.println(app.invoke(Map.of("input_query", "hello")));
+</pre>
+</div>
+</div>
+
+<h2 id="plan">改造计划：给研究引擎加一个「质检员」</h2>
+
+<p>
+  目标：在「逐页摘要」之后加一个<strong>相关性评估</strong>节点。如果相关的摘要不到一半，就回到「生成搜索查询」，换个角度重新搜；
+  最多重试三轮，避免无限循环。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 420" role="img" aria-label="LangGraph 版研究助手的图结构，评估节点可以回到生成查询节点形成循环">
+  <rect class="bx" x="300" y="8" width="160" height="30" rx="15"/><text class="lbl" x="380" y="28" text-anchor="middle">START</text>
+  <path class="ln" d="M380 40 V56" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="270" y="60" width="220" height="40" rx="8"/><text class="mono on-p" x="380" y="85" text-anchor="middle">select_assistant</text>
+  <path class="ln" d="M380 102 V118" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="270" y="122" width="220" height="40" rx="8"/><text class="mono on-p" x="380" y="147" text-anchor="middle">generate_search_queries</text>
+  <path class="ln" d="M380 164 V180" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="270" y="184" width="220" height="40" rx="8"/><text class="mono on-b" x="380" y="209" text-anchor="middle">perform_web_searches</text>
+  <path class="ln" d="M380 226 V242" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="270" y="246" width="220" height="40" rx="8"/><text class="mono on-b" x="380" y="271" text-anchor="middle">summarize_search_results</text>
+  <path class="ln" d="M380 288 V304" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="270" y="308" width="220" height="40" rx="8"/><text class="mono on-a" x="380" y="333" text-anchor="middle">evaluate_search_relevance</text>
+
+  <path class="ln-r" d="M492 328 H620 V142 H494" marker-end="url(#ar-r)"/>
+  <rect class="bx-r" x="566" y="204" width="180" height="62" rx="8"/>
+  <text class="sm on-r" x="656" y="224" text-anchor="middle">相关摘要 &lt; 50%</text>
+  <text class="sm on-r" x="656" y="240" text-anchor="middle">且重试未满 3 轮</text>
+  <text class="sm on-r" x="656" y="256" text-anchor="middle">→ 换个角度重新搜</text>
+
+  <path class="ln-g" d="M380 350 V370" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="392" y="364">够相关，或已到重试上限</text>
+  <rect class="bx-g" x="270" y="374" width="220" height="40" rx="8"/><text class="mono on-g" x="380" y="399" text-anchor="middle">write_research_report</text>
+  <path class="ln" d="M268 394 H222" marker-end="url(#ar)"/>
+  <rect class="bx" x="140" y="379" width="80" height="30" rx="15"/><text class="lbl" x="180" y="399" text-anchor="middle">END</text>
+
+  <rect class="bx-d" x="14" y="60" width="210" height="226" rx="10"/>
+  <text class="ttl" x="28" y="84">ResearchState</text>
+  <text class="mono" x="28" y="108">user_question</text>
+  <text class="mono" x="28" y="128">assistant_info</text>
+  <text class="mono" x="28" y="148">search_queries</text>
+  <text class="mono" x="28" y="168">search_results</text>
+  <text class="mono" x="28" y="188">search_summaries</text>
+  <text class="mono" x="28" y="208">research_summary</text>
+  <text class="mono" x="28" y="228">relevance_evaluation</text>
+  <text class="mono" x="28" y="248">should_regenerate_queries</text>
+  <text class="mono" x="28" y="268">iteration_count</text>
+</svg>
+<figcaption>图 5-3　红色回边就是链做不到、图能做到的事</figcaption>
+</figure>
+
+<h2 id="build">一步步实现</h2>
+
+<p>对应仓库的 <code>ch05/</code> 目录：<code>models.py</code>（状态）、<code>agents/</code>（节点）、<code>main.py</code>（图）。提示词和搜索、抓取函数沿用第 4 章的。</p>
+
+<h3>第一步：定义状态</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="models.py">
+<pre>
+from typing import List, Dict, Any, TypedDict, Optional
+
+class AssistantInfo(TypedDict):
+    assistant_type: str
+    assistant_instructions: str
+    user_question: str
+
+class SearchQuery(TypedDict):
+    search_query: str
+    user_question: str
+
+class SearchResult(TypedDict):
+    result_url: str
+    search_query: str
+    user_question: str
+
+class SearchSummary(TypedDict):
+    summary: str
+    result_url: str
+    user_question: str
+
+class ResearchState(TypedDict):                       # 整个图共享的状态
+    user_question: str
+    assistant_info: Optional[AssistantInfo]
+    search_queries: Optional[List[SearchQuery]]
+    search_results: Optional[List[SearchResult]]
+    search_summaries: Optional[List[SearchSummary]]
+    research_summary: Optional[str]
+    final_report: Optional[str]
+    relevance_evaluation: Optional[Dict[str, Any]]
+    should_regenerate_queries: Optional[bool]
+    iteration_count: Optional[int]
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="models.ts">
+<pre>
+import { Annotation } from "@langchain/langgraph";
+
+export type AssistantInfo = {
+  assistant_type: string; assistant_instructions: string; user_question: string };
+export type SearchQuery = { search_query: string; user_question: string };
+export type SearchResult = SearchQuery &amp; { result_url: string };
+export type SearchSummary = { summary: string; result_url: string; user_question: string };
+
+export const ResearchState = Annotation.Root({        // 整个图共享的状态
+  user_question: Annotation&lt;string&gt;,
+  assistant_info: Annotation&lt;AssistantInfo | null&gt;,
+  search_queries: Annotation&lt;SearchQuery[] | null&gt;,
+  search_results: Annotation&lt;SearchResult[] | null&gt;,
+  search_summaries: Annotation&lt;SearchSummary[] | null&gt;,
+  research_summary: Annotation&lt;string | null&gt;,
+  final_report: Annotation&lt;string | null&gt;,
+  relevance_evaluation: Annotation&lt;Record&lt;string, any&gt; | null&gt;,
+  should_regenerate_queries: Annotation&lt;boolean | null&gt;,
+  iteration_count: Annotation&lt;number&gt;,
+});
+export type State = typeof ResearchState.State;
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="ResearchState.java">
+<pre>
+import org.bsc.langgraph4j.state.AgentState;
+
+// LangGraph4j 的状态底层是一个 Map，我们给它包一层带类型的访问方法。
+public class ResearchState extends AgentState {
+    public ResearchState(Map&lt;String, Object&gt; data) { super(data); }
+
+    public String userQuestion()      { return this.&lt;String&gt;value("user_question").orElseThrow(); }
+    public AssistantInfo assistant()  { return this.&lt;AssistantInfo&gt;value("assistant_info").orElse(null); }
+    public List&lt;SearchQuery&gt; queries(){ return this.&lt;List&lt;SearchQuery&gt;&gt;value("search_queries").orElse(List.of()); }
+    public List&lt;SearchResult&gt; results(){ return this.&lt;List&lt;SearchResult&gt;&gt;value("search_results").orElse(List.of()); }
+    public List&lt;String&gt; summaries()   { return this.&lt;List&lt;String&gt;&gt;value("search_summaries").orElse(List.of()); }
+    public String researchSummary()   { return this.&lt;String&gt;value("research_summary").orElse(""); }
+    public boolean shouldRegenerate() { return this.&lt;Boolean&gt;value("should_regenerate_queries").orElse(false); }
+    public int iterationCount()       { return this.&lt;Integer&gt;value("iteration_count").orElse(0); }
+}
+</pre>
+</div>
+</div>
+
+<h3>第二步：把每条链改写成节点函数</h3>
+
+<p>
+  套路完全一样：<strong>从状态里取需要的字段 → 干活 → 返回要更新的字段</strong>。先看最简单的两个：
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="agents/assistant_selector.py + report_writer.py">
+<pre>
+import json
+
+def select_assistant(state: dict) -&gt; dict:
+    """根据用户问题选择合适的研究助手。"""
+    user_question = state["user_question"]
+    prompt = ASSISTANT_SELECTION_PROMPT_TEMPLATE.format(user_question=user_question)
+    response_text = get_llm().invoke(prompt).content
+
+    try:
+        # 模型有时会在 JSON 前后加说明文字，所以只截取第一个 { 到最后一个 } 之间的部分
+        json_str = response_text[response_text.find('{'): response_text.rfind('}') + 1]
+        return {"assistant_info": json.loads(json_str)}
+    except Exception:
+        # 解析失败就用一个通用助手兜底，而不是让整个流程崩掉
+        return {"assistant_info": {
+            "assistant_type": "General research assistant",
+            "assistant_instructions": "You are a general research AI assistant. ...",
+            "user_question": user_question}}
+
+def write_research_report(state: dict) -&gt; dict:
+    """根据汇总后的摘要撰写研究报告。"""
+    prompt = RESEARCH_REPORT_PROMPT_TEMPLATE.format(
+        research_summary=state["research_summary"],
+        user_question=state["user_question"])
+    return {"final_report": get_llm().invoke(prompt).content}
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="agents/assistantSelector.ts + reportWriter.ts">
+<pre>
+export async function selectAssistant(state: State) {
+  const prompt = await ASSISTANT_SELECTION_PROMPT_TEMPLATE.format({
+    user_question: state.user_question });
+  const text = (await getLlm().invoke(prompt)).content as string;
+
+  try {
+    // 只截取第一个 { 到最后一个 } 之间的部分
+    const jsonStr = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+    return { assistant_info: JSON.parse(jsonStr) as AssistantInfo };
+  } catch {
+    // 解析失败就用一个通用助手兜底
+    return { assistant_info: {
+      assistant_type: "General research assistant",
+      assistant_instructions: "You are a general research AI assistant. ...",
+      user_question: state.user_question } };
+  }
+}
+
+export async function writeResearchReport(state: State) {
+  const prompt = await RESEARCH_REPORT_PROMPT_TEMPLATE.format({
+    research_summary: state.research_summary, user_question: state.user_question });
+  return { final_report: (await getLlm().invoke(prompt)).content as string };
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Nodes.java">
+<pre>
+// 沿用第 4 章的 Researcher AI Service（selectAssistant / writeQueries / summarize / writeReport）
+static Map&lt;String, Object&gt; selectAssistant(Researcher ai, ResearchState state) {
+    try {
+        return Map.of("assistant_info", ai.selectAssistant(state.userQuestion()));
+    } catch (Exception e) {
+        // 解析失败就用一个通用助手兜底
+        return Map.of("assistant_info", new AssistantInfo(
+                "General research assistant",
+                "You are a general research AI assistant. ...",
+                state.userQuestion()));
+    }
+}
+
+static Map&lt;String, Object&gt; writeResearchReport(Researcher ai, ResearchState state) {
+    return Map.of("final_report",
+            ai.writeReport(state.researchSummary(), state.userQuestion()));
+}
+</pre>
+</div>
+</div>
+
+<p>
+  对比第 4 章：<code>write_research_report</code> 直接从状态里读 <code>user_question</code>，不再需要前面的每一步小心翼翼地把它传下来。
+</p>
+
+<h3>第三步：会「换个搜法」的查询生成节点</h3>
+
+<p>
+  这个节点可能被执行多次。第一次正常生成查询；重试时，它会把<strong>上一轮的查询和评估意见</strong>告诉模型，要求换个思路。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="agents/web_researcher.py（简化）">
+<pre>
+NUM_SEARCH_QUERIES = 3
+
+def generate_search_queries(state: dict) -&gt; dict:
+    assistant_instructions = state["assistant_info"]["assistant_instructions"]
+    user_question = state["user_question"]
+    iteration_count = state.get("iteration_count", 0)
+    previous_queries = state.get("search_queries") or []
+    evaluation = state.get("relevance_evaluation") or {}
+
+    if iteration_count == 0:
+        # 第一次：用标准提示词
+        prompt = WEB_SEARCH_PROMPT_TEMPLATE.format(
+            assistant_instructions=assistant_instructions,
+            user_question=user_question,
+            num_search_queries=NUM_SEARCH_QUERIES)
+    else:
+        # 重试：告诉模型上次哪里不行，要求完全不同的查询
+        previous = ", ".join(q["search_query"] for q in previous_queries)
+        prompt = f"""
+        {assistant_instructions}
+        You are generating new search queries because the previous queries did not yield
+        sufficiently relevant results.
+        Original question: {user_question}
+        Previous search queries: {previous}
+        Relevance evaluation: {evaluation.get("relevance_percentage", 0)}% relevant
+        Explanation: {evaluation.get("explanation", "")}
+        Please generate {NUM_SEARCH_QUERIES} NEW and DIFFERENT web search queries that are
+        MORE SPECIFIC and TARGETED. DO NOT repeat or rephrase the previous queries.
+        You must respond with a list of queries in the following format:
+        [ {{"search_query": "query1", "user_question": "{user_question}" }}, ... ]
+        """
+
+    text = get_llm().invoke(prompt).content
+    queries = json.loads(text[text.find('['): text.rfind(']') + 1])
+
+    return {"search_queries": queries,
+            "relevance_evaluation": None,          # 新一轮开始，清掉旧的评估结果
+            "should_regenerate_queries": None}
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="agents/webResearcher.ts（简化）">
+<pre>
+const NUM_SEARCH_QUERIES = 3;
+
+export async function generateSearchQueries(state: State) {
+  const instructions = state.assistant_info!.assistant_instructions;
+  const question = state.user_question;
+  const evaluation = state.relevance_evaluation ?? {};
+  let prompt: string;
+
+  if ((state.iteration_count ?? 0) === 0) {
+    // 第一次：用标准提示词
+    prompt = await WEB_SEARCH_PROMPT_TEMPLATE.format({
+      assistant_instructions: instructions, user_question: question,
+      num_search_queries: NUM_SEARCH_QUERIES });
+  } else {
+    // 重试：告诉模型上次哪里不行，要求完全不同的查询
+    const previous = (state.search_queries ?? []).map((q) =&gt; q.search_query).join(", ");
+    prompt = `
+      ${instructions}
+      You are generating new search queries because the previous queries did not yield
+      sufficiently relevant results.
+      Original question: ${question}
+      Previous search queries: ${previous}
+      Relevance evaluation: ${evaluation.relevance_percentage ?? 0}% relevant
+      Explanation: ${evaluation.explanation ?? ""}
+      Please generate ${NUM_SEARCH_QUERIES} NEW and DIFFERENT web search queries that are
+      MORE SPECIFIC and TARGETED. DO NOT repeat or rephrase the previous queries.
+      You must respond with a list of queries in the following format:
+      [ {"search_query": "query1", "user_question": "${question}" }, ... ]`;
+  }
+
+  const text = (await getLlm().invoke(prompt)).content as string;
+  const queries: SearchQuery[] =
+    JSON.parse(text.slice(text.indexOf("["), text.lastIndexOf("]") + 1));
+
+  return { search_queries: queries,
+           relevance_evaluation: null,           // 新一轮开始，清掉旧的评估结果
+           should_regenerate_queries: null };
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Nodes.java（续）">
+<pre>
+// 在 Researcher 接口里再加一个「重试用」的方法：
+//   @UserMessage(fromResource = "prompts/web_search_retry.txt")
+//   List&lt;SearchQuery&gt; rewriteQueries(@V("assistant_instructions") String instructions,
+//                                    @V("user_question") String question,
+//                                    @V("previous_queries") String previous,
+//                                    @V("explanation") String explanation);
+
+static Map&lt;String, Object&gt; generateSearchQueries(Researcher ai, ResearchState state) {
+    String instructions = state.assistant().assistantInstructions();
+    List&lt;SearchQuery&gt; queries;
+
+    if (state.iterationCount() == 0) {
+        queries = ai.writeQueries(instructions, 3, state.userQuestion());       // 第一次
+    } else {
+        String previous = state.queries().stream()                              // 重试
+                .map(SearchQuery::searchQuery).collect(Collectors.joining(", "));
+        String explanation = state.&lt;String&gt;value("relevance_explanation").orElse("");
+        queries = ai.rewriteQueries(instructions, state.userQuestion(), previous, explanation);
+    }
+    return Map.of("search_queries", queries, "should_regenerate_queries", false);
+}
+</pre>
+</div>
+</div>
+
+<p>搜索节点和摘要节点只是把第 4 章的函数套上「读状态 / 写状态」的外壳，这里不再重复，完整代码见 <code>ch05/agents/web_researcher.py</code>。</p>
+
+<h3>第四步：质检节点 —— 用 LLM 评估 LLM 的产出</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="agents/web_researcher.py（简化）">
+<pre>
+def evaluate_search_relevance(state: dict) -&gt; dict:
+    """评估摘要与原问题的相关性；不足 50% 则要求重新生成查询。"""
+    search_summaries = state.get("search_summaries") or []
+    iteration_count = state.get("iteration_count", 0) + 1     # 记一轮
+
+    if not search_summaries:
+        return {"should_regenerate_queries": True, "iteration_count": iteration_count}
+
+    prompt = f"""
+    Evaluate whether each of the following summaries is relevant to the question.
+    Question: {state["user_question"]}
+    Summaries:
+    {state["research_summary"]}
+
+    Respond in JSON:
+    {{"relevance_percentage": &lt;0-100&gt;, "explanation": "&lt;one or two sentences&gt;"}}
+    """
+    text = get_llm().invoke(prompt).content
+    evaluation = json.loads(text[text.find('{'): text.rfind('}') + 1])
+
+    return {"relevance_evaluation": evaluation,
+            "should_regenerate_queries": evaluation["relevance_percentage"] &lt; 50,
+            "iteration_count": iteration_count}
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="agents/webResearcher.ts（简化）">
+<pre>
+export async function evaluateSearchRelevance(state: State) {
+  const iteration_count = (state.iteration_count ?? 0) + 1;    // 记一轮
+
+  if (!state.search_summaries?.length) {
+    return { should_regenerate_queries: true, iteration_count };
+  }
+
+  const prompt = `
+    Evaluate whether each of the following summaries is relevant to the question.
+    Question: ${state.user_question}
+    Summaries:
+    ${state.research_summary}
+
+    Respond in JSON:
+    {"relevance_percentage": &lt;0-100&gt;, "explanation": "&lt;one or two sentences&gt;"}`;
+
+  const text = (await getLlm().invoke(prompt)).content as string;
+  const evaluation = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+
+  return { relevance_evaluation: evaluation,
+           should_regenerate_queries: evaluation.relevance_percentage &lt; 50,
+           iteration_count };
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Nodes.java（续）">
+<pre>
+record RelevanceEvaluation(int relevancePercentage, String explanation) {}
+
+// Researcher 接口里再加：
+//   @UserMessage("""
+//       Evaluate whether each of the following summaries is relevant to the question.
+//       Question: {{question}}
+//       Summaries:
+//       {{summaries}}""")
+//   RelevanceEvaluation evaluate(@V("question") String q, @V("summaries") String s);
+
+static Map&lt;String, Object&gt; evaluateSearchRelevance(Researcher ai, ResearchState state) {
+    int iterationCount = state.iterationCount() + 1;                 // 记一轮
+
+    if (state.summaries().isEmpty()) {
+        return Map.of("should_regenerate_queries", true, "iteration_count", iterationCount);
+    }
+    RelevanceEvaluation eval = ai.evaluate(state.userQuestion(), state.researchSummary());
+
+    return Map.of("relevance_explanation", eval.explanation(),
+                  "should_regenerate_queries", eval.relevancePercentage() &lt; 50,
+                  "iteration_count", iterationCount);
+}
+</pre>
+</div>
+</div>
+
+<h3>第五步：连成图</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main.py">
+<pre>
+from langgraph.graph import StateGraph, END
+
+MAX_ITERATIONS = 3
+
+def route_based_on_relevance(state: dict) -&gt; str:
+    """条件边：只读状态，返回下一个节点的名字。"""
+    if state.get("iteration_count", 0) &gt;= MAX_ITERATIONS:
+        return "write_research_report"            # 到上限了，有什么写什么
+    if state.get("should_regenerate_queries", False):
+        return "generate_search_queries"          # 不够相关，回去重搜
+    return "write_research_report"
+
+def create_research_graph() -&gt; StateGraph:
+    graph = StateGraph(ResearchState)
+
+    graph.add_node("select_assistant", select_assistant)
+    graph.add_node("generate_search_queries", generate_search_queries)
+    graph.add_node("perform_web_searches", perform_web_searches)
+    graph.add_node("summarize_search_results", summarize_search_results)
+    graph.add_node("evaluate_search_relevance", evaluate_search_relevance)
+    graph.add_node("write_research_report", write_research_report)
+
+    graph.set_entry_point("select_assistant")
+    graph.add_edge("select_assistant", "generate_search_queries")
+    graph.add_edge("generate_search_queries", "perform_web_searches")
+    graph.add_edge("perform_web_searches", "summarize_search_results")
+    graph.add_edge("summarize_search_results", "evaluate_search_relevance")
+
+    graph.add_conditional_edges(
+        "evaluate_search_relevance",
+        route_based_on_relevance,
+        {"generate_search_queries": "generate_search_queries",
+         "write_research_report": "write_research_report"})
+
+    graph.add_edge("write_research_report", END)
+    return graph
+
+app = create_research_graph().compile()
+
+result = app.invoke({
+    "user_question": "What can you tell me about Astorga's roman spas",
+    "iteration_count": 0})
+print(result["final_report"])
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="main.ts">
+<pre>
+import { StateGraph, START, END } from "@langchain/langgraph";
+
+const MAX_ITERATIONS = 3;
+
+/** 条件边：只读状态，返回下一个节点的名字。 */
+function routeBasedOnRelevance(state: State) {
+  if ((state.iteration_count ?? 0) &gt;= MAX_ITERATIONS) return "write_research_report";
+  if (state.should_regenerate_queries) return "generate_search_queries";
+  return "write_research_report";
+}
+
+const app = new StateGraph(ResearchState)
+  .addNode("select_assistant", selectAssistant)
+  .addNode("generate_search_queries", generateSearchQueries)
+  .addNode("perform_web_searches", performWebSearches)
+  .addNode("summarize_search_results", summarizeSearchResults)
+  .addNode("evaluate_search_relevance", evaluateSearchRelevance)
+  .addNode("write_research_report", writeResearchReport)
+
+  .addEdge(START, "select_assistant")
+  .addEdge("select_assistant", "generate_search_queries")
+  .addEdge("generate_search_queries", "perform_web_searches")
+  .addEdge("perform_web_searches", "summarize_search_results")
+  .addEdge("summarize_search_results", "evaluate_search_relevance")
+  .addConditionalEdges("evaluate_search_relevance", routeBasedOnRelevance,
+    ["generate_search_queries", "write_research_report"])
+  .addEdge("write_research_report", END)
+  .compile();
+
+const result = await app.invoke({
+  user_question: "What can you tell me about Astorga's roman spas",
+  iteration_count: 0,
+});
+console.log(result.final_report);
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="ResearchGraph.java">
+<pre>
+import static org.bsc.langgraph4j.action.AsyncEdgeAction.edge_async;
+import static org.bsc.langgraph4j.action.AsyncNodeAction.node_async;
+
+final int MAX_ITERATIONS = 3;
+
+var app = new StateGraph&lt;&gt;(ResearchState::new)
+        .addNode("select_assistant",          node_async(s -&gt; Nodes.selectAssistant(ai, s)))
+        .addNode("generate_search_queries",   node_async(s -&gt; Nodes.generateSearchQueries(ai, s)))
+        .addNode("perform_web_searches",      node_async(Nodes::performWebSearches))
+        .addNode("summarize_search_results",  node_async(s -&gt; Nodes.summarizeSearchResults(ai, s)))
+        .addNode("evaluate_search_relevance", node_async(s -&gt; Nodes.evaluateSearchRelevance(ai, s)))
+        .addNode("write_research_report",     node_async(s -&gt; Nodes.writeResearchReport(ai, s)))
+
+        .addEdge(START, "select_assistant")
+        .addEdge("select_assistant", "generate_search_queries")
+        .addEdge("generate_search_queries", "perform_web_searches")
+        .addEdge("perform_web_searches", "summarize_search_results")
+        .addEdge("summarize_search_results", "evaluate_search_relevance")
+
+        // 条件边：路由函数返回一个「标签」，后面的 Map 把标签映射到节点名
+        .addConditionalEdges("evaluate_search_relevance",
+                edge_async(s -&gt; {
+                    if (s.iterationCount() &gt;= MAX_ITERATIONS) return "report";
+                    return s.shouldRegenerate() ? "retry" : "report";
+                }),
+                Map.of("retry", "generate_search_queries",
+                       "report", "write_research_report"))
+
+        .addEdge("write_research_report", END)
+        .compile();
+
+var result = app.invoke(Map.of(
+        "user_question", "What can you tell me about Astorga's roman spas",
+        "iteration_count", 0));
+System.out.println(result.orElseThrow().&lt;String&gt;value("final_report").orElse(""));
+</pre>
+</div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 路由函数里不要改状态</div>
+  <p>
+    条件边的路由函数应该是<strong>只读</strong>的：读状态，返回去向，仅此而已。在路由函数里直接修改 <code>state</code>，改动<strong>不会</strong>被保存。
+    想更新状态（比如给 <code>iteration_count</code> 加一），必须在<strong>节点</strong>的返回值里做 —— 所以上面把计数放进了评估节点。
+    仓库里 <code>ch05/main.py</code> 的原始写法是在路由函数里自增计数，读代码时留意这一点。
+  </p>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 有循环，就必须有出口</div>
+  <p>
+    <code>MAX_ITERATIONS</code> 不是可有可无的。如果问题本身就搜不到好结果，没有上限的循环会一直烧钱。
+    任何带回边的图都要问自己一句：<strong>最坏情况下它会转几圈？</strong>
+  </p>
+</div>
+
+<h2 id="compare">链 vs 图：到底换来了什么</h2>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>第 4 章：LCEL 链</th><th>本章：LangGraph 图</th></tr>
+  <tr><td>数据怎么传</td><td>上一步的输出就是下一步的输入，需要的字段得一路带着</td><td>所有节点读写同一份状态</td></tr>
+  <tr><td>分支与循环</td><td>很别扭，或者做不到</td><td>条件边，原生支持</td></tr>
+  <tr><td>并行</td><td><code>.map()</code> 一行搞定</td><td>要自己在节点里并发，或用 Send API</td></tr>
+  <tr><td>调试</td><td>中间数据藏在管道里</td><td>每一步之后的完整状态都能打印出来</td></tr>
+  <tr><td>代码量</td><td>少</td><td>多一些（要定义状态、节点、边）</td></tr>
+  <tr><td>适合</td><td>线性流水线</td><td>需要决策、重试、长时间运行的流程</td></tr>
+</table>
+</div>
+
+<div class="box key">
+  <div class="t">&#128273; 两者是搭档，不是对手</div>
+  <p>
+    图的<strong>节点内部</strong>完全可以是一条 LCEL 链。常见的做法是：
+    用链处理「一个节点里的事」（模板 → 模型 → 解析），用图处理「节点之间的事」（先谁后谁、要不要回头）。
+  </p>
+</div>
+
+<h2 id="frameworks">其他智能体框架一览</h2>
+
+<div class="tw">
+<table>
+  <tr><th>框架</th><th>特点</th></tr>
+  <tr><td>LangGraph</td><td>基于图的有状态、可持久化工作流；控制力强，学习成本稍高。<strong>本教程使用</strong></td></tr>
+  <tr><td>CrewAI</td><td>用「角色 + 团队」的方式组织多智能体协作，有社区模板</td></tr>
+  <tr><td>Microsoft AutoGen</td><td>高度可定制的多智能体对话，学习曲线较陡</td></tr>
+  <tr><td>Microsoft Semantic Kernel</td><td>强调记忆和规划，与 Azure 集成好</td></tr>
+  <tr><td>LlamaIndex</td><td>知识检索见长，范围比通用智能体框架窄</td></tr>
+  <tr><td>OpenAI Agents SDK / Google ADK</td><td>各家官方的精简智能体开发套件</td></tr>
+  <tr><td>n8n / LangFlow</td><td>可视化拖拽，对非开发者友好</td></tr>
+  <tr><td>AutoGPT</td><td>强调完全自主、少监督，任务一致性是挑战</td></tr>
+</table>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li><strong>工作流</strong>走预设路线，LLM 只做选择；<strong>智能体</strong>由 LLM 动态决定下一步。能用工作流就先用工作流。</li>
+  <li>链处理不了分支、循环和跨步骤共享的状态；LangGraph 用图来解决。</li>
+  <li>四个核心概念：<strong>状态</strong>（共享记事本）、<strong>节点</strong>（读状态、返回更新的函数）、<strong>边</strong>、<strong>条件边</strong>（读状态、返回去向的函数）。</li>
+  <li>节点只返回要更新的字段；路由函数只读不写。</li>
+  <li>「让 LLM 评估结果，不合格就重试」是一个通用且好用的模式，但循环必须设上限。</li>
+  <li>链和图配合使用：节点内部用链，节点之间用图。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>跑通 <code>ch05/main.py</code>（或你选的语言版本），在每个节点开头打印一行日志，观察实际的执行顺序。</li>
+    <li>故意问一个很难搜到好结果的冷门问题，看重试循环是否被触发、转了几圈。</li>
+    <li>把相关性阈值从 50% 改成 80%，重试次数和总耗时有什么变化？</li>
+    <li>加一个新节点 <code>translate_report</code>，放在写报告之后，把报告翻译成中文。你需要改动哪几处？</li>
+    <li>思考题：如果想让「搜索」和「抓取摘要」像第 4 章那样并行，在图的框架下可以怎么做？</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

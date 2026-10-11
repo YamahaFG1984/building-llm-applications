@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 11 章 · 基于工具的智能体 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="11">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 11 章</span>
+<h1>基于工具的智能体</h1>
+<p class="lede">
+  前面十章里，流程都是我们写死的：先检索，再生成。从这一章起把方向盘交给模型 ——
+  给它一组<strong>工具</strong>，由它自己决定用不用、用哪个、用几次。
+  我们会先<strong>手写</strong>一遍智能体的核心循环，看清每个齿轮怎么转，然后再换成一行就能搞定的预置组件。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解「工具调用」的真相：模型只是<em>提出请求</em>，真正执行的是你的代码</li>
+    <li>掌握 ReAct 模式：思考 → 行动 → 观察，循环往复</li>
+    <li>用 LangGraph 从零搭一个单工具的旅行信息智能体</li>
+    <li>扩展成多工具智能体，并用系统提示词引导它正确使用工具</li>
+    <li>用预置的 ReAct 智能体把几十行代码缩成几行</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="toolcall">工具调用是怎么回事</h2>
+
+<p>
+  第 1 章说过，LLM「只会说，不会做」。那它怎么查天气、查数据库？答案是一个约定好的<strong>协作协议</strong>，叫<strong>工具调用</strong>
+  （tool calling，早期叫 function calling）：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 390" role="img" aria-label="工具调用时序图：应用把工具清单和问题发给 LLM，LLM 返回工具调用请求，应用执行工具并把结果发回，LLM 给出最终答案">
+  <rect class="bx" x="40" y="12" width="110" height="34" rx="8"/><text class="ttl" x="95" y="34" text-anchor="middle">用户</text>
+  <rect class="bx-g" x="240" y="12" width="130" height="34" rx="8"/><text class="ttl on-g" x="305" y="34" text-anchor="middle">你的程序</text>
+  <rect class="bx-a" x="460" y="12" width="110" height="34" rx="8"/><text class="ttl on-a" x="515" y="34" text-anchor="middle">LLM</text>
+  <rect class="bx-b" x="630" y="12" width="110" height="34" rx="8"/><text class="ttl on-b" x="685" y="34" text-anchor="middle">工具（函数）</text>
+  <path class="ln-d" d="M95 46 V380"/><path class="ln-d" d="M305 46 V380"/><path class="ln-d" d="M515 46 V380"/><path class="ln-d" d="M685 46 V380"/>
+
+  <path class="ln" d="M95 76 H301" marker-end="url(#ar)"/><text class="lbl" x="200" y="68" text-anchor="middle">康沃尔有哪些海滩？</text>
+
+  <rect class="bx-p" x="322" y="88" width="176" height="42" rx="6"/>
+  <text class="sm on-p" x="410" y="105" text-anchor="middle">① 问题 + 工具清单</text>
+  <text class="sm on-p" x="410" y="121" text-anchor="middle">（名称、描述、参数格式）</text>
+  <path class="ln-a" d="M305 140 H511" marker-end="url(#ar-a)"/>
+
+  <path class="ln" d="M515 176 H309" marker-end="url(#ar)"/>
+  <rect class="bx-r" x="322" y="184" width="176" height="42" rx="6"/>
+  <text class="sm on-r" x="410" y="201" text-anchor="middle">② 不是答案，而是一个请求：</text>
+  <text class="mono" x="410" y="218" text-anchor="middle">search(query="beaches")</text>
+
+  <path class="ln-b" d="M305 248 H681" marker-end="url(#ar-b)"/><text class="sm on-b" x="600" y="240" text-anchor="middle">③ 真正执行函数</text>
+  <path class="ln" d="M685 272 H309" marker-end="url(#ar)"/><text class="sm" x="600" y="288" text-anchor="middle">返回值</text>
+
+  <path class="ln-a" d="M305 310 H511" marker-end="url(#ar-a)"/><text class="sm on-a" x="410" y="302" text-anchor="middle">④ 把工具结果发回去</text>
+  <path class="ln" d="M515 338 H309" marker-end="url(#ar)"/><text class="sm" x="410" y="354" text-anchor="middle">⑤ 这次是自然语言的最终答案</text>
+  <path class="ln-g" d="M305 366 H99" marker-end="url(#ar-g)"/><text class="lbl on-g" x="200" y="358" text-anchor="middle">答案</text>
+</svg>
+<figcaption>图 11-1　LLM 从头到尾没有碰过工具 —— 它只负责「点菜」，「做菜」的是你的程序</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#128273; 这一章最重要的一句话</div>
+  <p>
+    模型<strong>不会</strong>执行任何东西。它只是输出一段结构化的文字：「我想调用 <code>search_travel_info</code>，参数是 <code>{"query": "..."}</code>」。
+    要不要执行、怎么执行、执行前要不要检查权限 —— 全部由你的代码决定。这也是智能体安全性的根基。
+  </p>
+</div>
+
+<h3>ReAct：思考、行动、观察</h3>
+
+<p>
+  一次工具调用往往不够。问「推荐两个天气好的康沃尔海滨小镇」，得先查有哪些海滨小镇，再逐个查天气。
+  让这个过程<strong>循环</strong>起来的模式叫 <strong>ReAct</strong>（<em>Rea</em>soning + <em>Act</em>ing）：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="ReAct 循环：LLM 思考并决定行动，工具执行并返回观察结果，循环直到 LLM 给出最终答案">
+  <rect class="bx" x="20" y="88" width="100" height="54" rx="8"/><text class="lbl" x="70" y="120" text-anchor="middle">用户问题</text>
+  <rect class="bx-a" x="210" y="60" width="180" height="110" rx="14"/>
+  <text class="ttl on-a" x="300" y="92" text-anchor="middle">思考 Reason</text>
+  <text class="sm" x="300" y="114" text-anchor="middle">LLM 看着目前的全部消息，</text>
+  <text class="sm" x="300" y="130" text-anchor="middle">决定：还需要调用工具吗？</text>
+  <text class="sm" x="300" y="150" text-anchor="middle">调哪个？参数是什么？</text>
+  <rect class="bx-b" x="510" y="20" width="180" height="62" rx="12"/>
+  <text class="ttl on-b" x="600" y="46" text-anchor="middle">行动 Act</text><text class="sm" x="600" y="66" text-anchor="middle">程序执行被请求的工具</text>
+  <rect class="bx-p" x="510" y="148" width="180" height="62" rx="12"/>
+  <text class="ttl on-p" x="600" y="174" text-anchor="middle">观察 Observe</text><text class="sm" x="600" y="194" text-anchor="middle">工具结果追加到消息列表</text>
+  <path class="ln" d="M122 115 H206" marker-end="url(#ar)"/>
+  <path class="ln-b" d="M392 90 L506 56" marker-end="url(#ar-b)"/><text class="sm on-b" x="440" y="58" text-anchor="middle">需要工具</text>
+  <path class="ln-b" d="M600 84 V144" marker-end="url(#ar-b)"/>
+  <path class="ln-p" d="M506 176 L396 142" marker-end="url(#ar-p)"/><text class="sm on-p" x="440" y="178" text-anchor="middle">带着新信息再想</text>
+  <path class="ln-g" d="M300 172 V204 H126" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="20" y="180" width="104" height="44" rx="8"/><text class="lbl on-g" x="72" y="207" text-anchor="middle">最终答案</text>
+  <text class="sm on-g" x="216" y="198" text-anchor="middle">不再需要工具</text>
+</svg>
+<figcaption>图 11-2　ReAct 循环：转几圈由模型决定</figcaption>
+</figure>
+
+<p>对比一下第 5 章：那里的循环条件是我们写的规则（相关性 &lt; 50%）；这里<strong>循环是否继续由模型自己判断</strong>。这就是「工作流」和「智能体」的分水岭。</p>
+
+<h2 id="kb">准备：旅行知识库</h2>
+
+<p>
+  我们的智能体要回答关于英国康沃尔的旅行问题。先把四个 Wikivoyage 页面做成向量库 —— 这是第 7 章的老手艺，只是这次它不直接接进链里，而是会被包装成一个<strong>工具</strong>。
+  对应仓库的 <code>ch11/main_01_01.py</code>。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_01_01.py（第 1 部分）">
+<pre>
+import os, asyncio, json, operator
+from typing import Annotated, Sequence, TypedDict
+from dotenv import load_dotenv
+from langchain_community.document_loaders import AsyncHtmlLoader
+from langchain_community.vectorstores import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+
+load_dotenv()
+
+UK_DESTINATIONS = ["Cornwall", "North_Cornwall", "South_Cornwall", "West_Cornwall"]
+
+async def build_vectorstore(destinations: Sequence[str]) -&gt; Chroma:
+    """下载 WikiVoyage 页面并建立 Chroma 向量库。"""
+    urls = [f"https://en.wikivoyage.org/wiki/{slug}" for slug in destinations]
+    docs = await AsyncHtmlLoader(urls).aload()
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1024, chunk_overlap=128)
+    chunks = sum([splitter.split_documents([d]) for d in docs], [])
+
+    print(f"Embedding {len(chunks)} chunks ...")
+    return Chroma.from_documents(chunks, embedding=OpenAIEmbeddings())
+
+ti_vectorstore_client = asyncio.run(build_vectorstore(UK_DESTINATIONS))
+ti_retriever = ti_vectorstore_client.as_retriever()
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="main.ts（第 1 部分）">
+<pre>
+import "dotenv/config";
+import * as cheerio from "cheerio";
+import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory";
+import { OpenAIEmbeddings, ChatOpenAI } from "@langchain/openai";
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+
+const UK_DESTINATIONS = ["Cornwall", "North_Cornwall", "South_Cornwall", "West_Cornwall"];
+
+/** 下载 WikiVoyage 页面并建立向量库（这里用内存向量库，省去启动 Chroma 服务）。 */
+async function buildVectorstore(destinations: string[]) {
+  const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 1024, chunkOverlap: 128 });
+  const texts: string[] = [], metadatas: { source: string }[] = [];
+
+  for (const slug of destinations) {
+    const url = `https://en.wikivoyage.org/wiki/${slug}`;
+    const $ = cheerio.load(await (await fetch(url)).text());
+    $("script, style").remove();
+    texts.push($("body").text());
+    metadatas.push({ source: url });
+  }
+  const chunks = await splitter.createDocuments(texts, metadatas);
+  console.log(`Embedding ${chunks.length} chunks ...`);
+  return MemoryVectorStore.fromDocuments(chunks, new OpenAIEmbeddings());
+}
+
+const tiVectorstore = await buildVectorstore(UK_DESTINATIONS);
+const tiRetriever = tiVectorstore.asRetriever();
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="TravelKnowledgeBase.java">
+<pre>
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+
+public class TravelKnowledgeBase {
+    static final List&lt;String&gt; UK_DESTINATIONS =
+            List.of("Cornwall", "North_Cornwall", "South_Cornwall", "West_Cornwall");
+
+    final EmbeddingModel embeddingModel = OpenAiEmbeddingModel.builder()
+            .apiKey(System.getenv("OPENAI_API_KEY")).modelName("text-embedding-3-small").build();
+    final EmbeddingStore&lt;TextSegment&gt; store = new InMemoryEmbeddingStore&lt;&gt;();
+
+    /** 下载 WikiVoyage 页面并建立向量库。 */
+    public TravelKnowledgeBase() throws IOException {
+        var splitter = DocumentSplitters.recursive(1024, 128);
+        for (String slug : UK_DESTINATIONS) {
+            String url = "https://en.wikivoyage.org/wiki/" + slug;
+            var doc = Document.from(Jsoup.connect(url).get().body().text(), Metadata.from("source", url));
+            var chunks = splitter.split(doc);
+            store.addAll(embeddingModel.embedAll(chunks).content(), chunks);
+        }
+    }
+
+    public String search(String query) {
+        var request = EmbeddingSearchRequest.builder()
+                .queryEmbedding(embeddingModel.embed(query).content()).maxResults(4).build();
+        return store.search(request).matches().stream()
+                .map(m -&gt; m.embedded().text())
+                .collect(Collectors.joining("\n---\n"));
+    }
+}
+</pre>
+</div>
+</div>
+
+<h2 id="tool">定义工具</h2>
+
+<p>
+  一个工具就是<strong>一个普通函数 + 一份给模型看的说明书</strong>。说明书包含三样：名称、用途描述、参数的名字和类型。
+  模型完全靠这份说明书判断「什么时候该用它、参数该填什么」。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_01_01.py（第 2 部分）">
+<pre>
+from langchain_core.tools import tool
+
+@tool                                    # 装饰器把函数变成工具
+def search_travel_info(query: str) -&gt; str:
+    """Search embedded WikiVoyage content for
+    information about destinations in England."""      # ← 文档字符串就是给模型看的描述
+    docs = ti_retriever.invoke(query)
+    top = docs[:4] if isinstance(docs, list) else docs
+    return "\n---\n".join(d.page_content for d in top)
+
+# 把工具「绑定」到模型：之后每次调用都会自动带上工具清单
+TOOLS = [search_travel_info]
+llm_model = ChatOpenAI(temperature=0, model="gpt-4.1-mini", use_responses_api=True)
+llm_with_tools = llm_model.bind_tools(TOOLS)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="main.ts（第 2 部分）">
+<pre>
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+
+const searchTravelInfo = tool(
+  async ({ query }) =&gt; {
+    const docs = await tiRetriever.invoke(query);
+    return docs.slice(0, 4).map((d) =&gt; d.pageContent).join("\n---\n");
+  },
+  {
+    name: "search_travel_info",
+    description: "Search embedded WikiVoyage content for information about destinations in England.",
+    schema: z.object({ query: z.string().describe("What to search for") }),   // 参数说明书
+  },
+);
+
+// 把工具「绑定」到模型：之后每次调用都会自动带上工具清单
+const TOOLS = [searchTravelInfo];
+const llmModel = new ChatOpenAI({ model: "gpt-4.1-mini", temperature: 0 });
+const llmWithTools = llmModel.bindTools(TOOLS);
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="TravelTools.java">
+<pre>
+import dev.langchain4j.agent.tool.P;
+import dev.langchain4j.agent.tool.Tool;
+
+public class TravelTools {
+    private final TravelKnowledgeBase kb;
+    public TravelTools(TravelKnowledgeBase kb) { this.kb = kb; }
+
+    // @Tool 里的文字就是给模型看的描述；@P 描述每个参数
+    @Tool("Search embedded WikiVoyage content for information about destinations in England.")
+    public String searchTravelInfo(@P("What to search for") String query) {
+        return kb.search(query);
+    }
+}
+
+// 从带 @Tool 注解的类生成「工具说明书」，稍后随请求一起发给模型
+List&lt;ToolSpecification&gt; toolSpecs = ToolSpecifications.toolSpecificationsFrom(TravelTools.class);
+</pre>
+</div>
+</div>
+
+<p>框架根据函数签名和描述，自动生成一份 JSON Schema 发给模型。它大致长这样：</p>
+
+<div class="code" data-lang="json" data-file="模型实际收到的工具说明书">
+<pre>
+{
+  "type": "function",
+  "name": "search_travel_info",
+  "description": "Search embedded WikiVoyage content for information about destinations in England.",
+  "parameters": {
+    "type": "object",
+    "properties": { "query": { "type": "string" } },
+    "required": ["query"]
+  }
+}
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 工具描述就是提示词</div>
+  <p>
+    模型选不选这个工具、参数填得对不对，几乎完全取决于描述写得清不清楚。
+    把它当成写给一位新同事的说明：这个工具<strong>做什么</strong>、<strong>什么时候该用</strong>、<strong>每个参数是什么意思</strong>、<strong>返回什么</strong>。
+    后面会看到，描述含糊时模型会跳过工具，自己编答案。
+  </p>
+</div>
+
+<h2 id="graph">手写智能体的图</h2>
+
+<p>
+  整个智能体只需要<strong>两个节点、一条条件边、一条回边</strong>：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 260" role="img" aria-label="智能体的图结构：llm_node 与 tools 节点之间通过条件边和回边形成循环">
+  <rect class="bx" x="40" y="104" width="100" height="36" rx="18"/><text class="lbl" x="90" y="127" text-anchor="middle">START</text>
+  <rect class="bx-a" x="220" y="86" width="160" height="72" rx="12"/>
+  <text class="mono on-a" x="300" y="116" text-anchor="middle">llm_node</text>
+  <text class="sm" x="300" y="138" text-anchor="middle">调用绑定了工具的 LLM</text>
+  <rect class="bx-b" x="520" y="20" width="170" height="72" rx="12"/>
+  <text class="mono on-b" x="605" y="50" text-anchor="middle">tools</text>
+  <text class="sm" x="605" y="72" text-anchor="middle">执行模型请求的工具</text>
+  <rect class="bx" x="555" y="176" width="100" height="36" rx="18"/><text class="lbl" x="605" y="199" text-anchor="middle">END</text>
+  <path class="ln" d="M142 122 H216" marker-end="url(#ar)"/>
+  <path class="ln-b" d="M382 106 L516 66" marker-end="url(#ar-b)"/>
+  <text class="sm on-b" x="462" y="112" text-anchor="middle">最后一条消息</text><text class="sm on-b" x="462" y="128" text-anchor="middle">有 tool_calls</text>
+  <path class="ln-g" d="M382 140 L551 190" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="430" y="190" text-anchor="middle">没有 tool_calls</text>
+  <path class="ln-p" d="M605 18 V6 H300 V82" marker-end="url(#ar-p)"/>
+  <text class="sm on-p" x="410" y="28" text-anchor="middle">固定回边：工具结果交回 LLM</text>
+  <rect class="bx-d" x="40" y="206" width="400" height="44" rx="8"/>
+  <text class="sm" x="54" y="224">条件边由预置的 tools_condition 实现：</text>
+  <text class="sm" x="54" y="240">它只做一件事 —— 检查最后一条消息里有没有工具调用请求</text>
+</svg>
+<figcaption>图 11-3　这张小图就是 ReAct 循环的全部</figcaption>
+</figure>
+
+<h3>状态：一个只增不减的消息列表</h3>
+
+<p>
+  状态里只有一个字段 <code>messages</code>。关键在于它的<strong>合并方式</strong>：第 5 章里节点返回的字段会<em>覆盖</em>旧值；
+  而这里我们声明「新消息<strong>追加</strong>到列表末尾」。这种合并规则叫 <strong>reducer</strong>。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage, SystemMessage
+
+class AgentState(TypedDict):
+    # Annotated[类型, 合并函数]：operator.add 对列表就是「拼接」
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { MessagesAnnotation } from "@langchain/langgraph";
+import { HumanMessage, SystemMessage, ToolMessage, AIMessage } from "@langchain/core/messages";
+
+// LangGraph.js 已经内置了「追加消息」的状态定义，直接用即可：
+//   MessagesAnnotation = { messages: BaseMessage[]（reducer：追加） }
+type AgentState = typeof MessagesAnnotation.State;
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.data.message.*;
+
+// Java 版先不用图，直接用一个 List 表示「只增不减的消息列表」——
+// 下面的 while 循环就是图 11-3 的直译，更容易看清本质。
+List&lt;ChatMessage&gt; messages = new ArrayList&lt;&gt;();
+</pre>
+</div>
+</div>
+
+<h3>两个节点</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_01_01.py（第 3 部分）">
+<pre>
+class ToolsExecutionNode:
+    """执行最后一条 AIMessage 里 LLM 请求的所有工具。"""
+
+    def __init__(self, tools: Sequence):
+        self._tools_by_name = {t.name: t for t in tools}
+
+    def __call__(self, state: dict):
+        last_msg = state["messages"][-1]
+        tool_messages: list[ToolMessage] = []
+
+        for tool_call in getattr(last_msg, "tool_calls", []):
+            tool = self._tools_by_name[tool_call["name"]]       # 按名字找到函数
+            result = tool.invoke(tool_call["args"])             # 用模型给的参数执行
+            tool_messages.append(ToolMessage(
+                content=json.dumps(result),
+                name=tool_call["name"],
+                tool_call_id=tool_call["id"]))                  # 必须带上 id，模型靠它对号入座
+
+        return {"messages": tool_messages}                      # 追加到状态
+
+tools_execution_node = ToolsExecutionNode(TOOLS)
+
+def llm_node(state: AgentState):
+    """LLM 节点：决定是调用工具，还是直接回答。"""
+    response_message = llm_with_tools.invoke(state["messages"])
+    return {"messages": [response_message]}
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="main.ts（第 3 部分）">
+<pre>
+const toolsByName = Object.fromEntries(TOOLS.map((t) =&gt; [t.name, t]));
+
+/** 执行最后一条 AIMessage 里 LLM 请求的所有工具。 */
+async function toolsExecutionNode(state: AgentState) {
+  const lastMsg = state.messages.at(-1) as AIMessage;
+  const toolMessages: ToolMessage[] = [];
+
+  for (const toolCall of lastMsg.tool_calls ?? []) {
+    const selected = toolsByName[toolCall.name];                 // 按名字找到函数
+    const result = await selected.invoke(toolCall.args);         // 用模型给的参数执行
+    toolMessages.push(new ToolMessage({
+      content: typeof result === "string" ? result : JSON.stringify(result),
+      name: toolCall.name,
+      tool_call_id: toolCall.id!,                                // 必须带上 id
+    }));
+  }
+  return { messages: toolMessages };                             // 追加到状态
+}
+
+/** LLM 节点：决定是调用工具，还是直接回答。 */
+async function llmNode(state: AgentState) {
+  const responseMessage = await llmWithTools.invoke(state.messages);
+  return { messages: [responseMessage] };
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="ManualAgent.java">
+<pre>
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.service.tool.DefaultToolExecutor;
+
+static String runAgent(ChatModel llm, Object tools, List&lt;ToolSpecification&gt; toolSpecs, String question) {
+    List&lt;ChatMessage&gt; messages = new ArrayList&lt;&gt;();
+    messages.add(UserMessage.from(question));
+
+    while (true) {
+        // —— LLM 节点：把全部消息 + 工具清单发给模型 ——
+        AiMessage aiMessage = llm.chat(ChatRequest.builder()
+                .messages(messages)
+                .toolSpecifications(toolSpecs)
+                .build()).aiMessage();
+        messages.add(aiMessage);
+
+        // —— 条件边：没有工具调用请求，就是最终答案 ——
+        if (!aiMessage.hasToolExecutionRequests()) {
+            return aiMessage.text();
+        }
+
+        // —— 工具节点：逐个执行，把结果作为「工具结果消息」追加 ——
+        for (ToolExecutionRequest request : aiMessage.toolExecutionRequests()) {
+            String result = new DefaultToolExecutor(tools, request).execute(request, null);
+            messages.add(ToolExecutionResultMessage.from(request, result));   // 内含 request 的 id
+        }
+        // —— 回边：回到循环开头，让模型带着工具结果再想 ——
+    }
+}
+</pre>
+</div>
+</div>
+
+<h3>连成图，再包一个聊天循环</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_01_01.py（第 4 部分）">
+<pre>
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import tools_condition
+
+builder = StateGraph(AgentState)
+builder.add_node("llm_node", llm_node)
+builder.add_node("tools", tools_execution_node)          # 节点必须叫 "tools"，tools_condition 认这个名字
+builder.add_conditional_edges("llm_node", tools_condition)   # 有 tool_calls → "tools"；否则 → END
+builder.add_edge("tools", "llm_node")                    # 工具执行完，回到 LLM
+builder.set_entry_point("llm_node")
+travel_info_agent = builder.compile()
+
+def chat_loop():
+    print("UK Travel Assistant (type 'exit' to quit)")
+    while True:
+        user_input = input("You: ").strip()
+        if user_input.lower() in {"exit", "quit"}:
+            break
+        state = {"messages": [HumanMessage(content=user_input)]}
+        result = travel_info_agent.invoke(state)
+        print(f"Assistant: {result['messages'][-1].content}\n")   # 最后一条消息就是最终答案
+
+if __name__ == "__main__":
+    chat_loop()
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="main.ts（第 4 部分）">
+<pre>
+import { StateGraph, START } from "@langchain/langgraph";
+import { toolsCondition } from "@langchain/langgraph/prebuilt";
+import * as readline from "node:readline/promises";
+
+const travelInfoAgent = new StateGraph(MessagesAnnotation)
+  .addNode("llm_node", llmNode)
+  .addNode("tools", toolsExecutionNode)                // 节点必须叫 "tools"
+  .addEdge(START, "llm_node")
+  .addConditionalEdges("llm_node", toolsCondition)     // 有 tool_calls → "tools"；否则 → END
+  .addEdge("tools", "llm_node")                        // 工具执行完，回到 LLM
+  .compile();
+
+async function chatLoop() {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  console.log("UK Travel Assistant (type 'exit' to quit)");
+  while (true) {
+    const userInput = (await rl.question("You: ")).trim();
+    if (["exit", "quit"].includes(userInput.toLowerCase())) break;
+    const result = await travelInfoAgent.invoke({ messages: [new HumanMessage(userInput)] });
+    console.log(`Assistant: ${result.messages.at(-1)?.content}\n`);   // 最后一条就是最终答案
+  }
+  rl.close();
+}
+
+await chatLoop();
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Main.java">
+<pre>
+public static void main(String[] args) throws IOException {
+    var llm = OpenAiChatModel.builder()
+            .apiKey(System.getenv("OPENAI_API_KEY")).modelName("gpt-4.1-mini").temperature(0.0).build();
+    var tools = new TravelTools(new TravelKnowledgeBase());
+    var toolSpecs = ToolSpecifications.toolSpecificationsFrom(TravelTools.class);
+
+    var scanner = new Scanner(System.in);
+    System.out.println("UK Travel Assistant (type 'exit' to quit)");
+    while (true) {
+        System.out.print("You: ");
+        String userInput = scanner.nextLine().trim();
+        if (userInput.equalsIgnoreCase("exit") || userInput.equalsIgnoreCase("quit")) break;
+        System.out.println("Assistant: " + runAgent(llm, tools, toolSpecs, userInput) + "\n");
+    }
+}
+
+// 想用图来表达？LangGraph4j 提供了现成的 ReAct 图：
+//   var agent = AgentExecutor.builder().chatModel(llm).toolsFromObject(tools).build().compile();
+</pre>
+</div>
+</div>
+
+<h2 id="trace">跟踪一次请求</h2>
+
+<p>问 "What are the best beaches in Cornwall?"，看 <code>messages</code> 列表是怎么一步步变长的：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="一次请求中消息列表的增长过程：HumanMessage、带工具调用的 AIMessage、ToolMessage、最终 AIMessage">
+  <text class="sm" x="20" y="24">步骤</text><text class="sm" x="150" y="24">状态里的 messages（每一步都只追加，不修改）</text>
+
+  <text class="lbl" x="20" y="62">① 用户输入</text>
+  <rect class="bx" x="150" y="42" width="590" height="32" rx="6"/>
+  <text class="mono" x="162" y="63">HumanMessage("What are the best beaches in Cornwall?")</text>
+
+  <text class="lbl" x="20" y="124">② llm_node</text>
+  <rect class="bx-r" x="150" y="92" width="590" height="50" rx="6"/>
+  <text class="mono on-r" x="162" y="112">AIMessage(content="", tool_calls=[{ id: "call_1",</text>
+  <text class="mono on-r" x="162" y="130">  name: "search_travel_info", args: {query: "best beaches Cornwall"} }])</text>
+  <text class="sm" x="20" y="142">→ 条件边：去 tools</text>
+
+  <text class="lbl" x="20" y="186">③ tools</text>
+  <rect class="bx-b" x="150" y="160" width="590" height="42" rx="6"/>
+  <text class="mono on-b" x="162" y="178">ToolMessage(tool_call_id="call_1",</text>
+  <text class="mono on-b" x="162" y="194">  content="...Fistral Beach in Newquay...---...Porthcurno...")</text>
+  <text class="sm" x="20" y="204">→ 回边：回 llm_node</text>
+
+  <text class="lbl" x="20" y="246">④ llm_node</text>
+  <rect class="bx-g" x="150" y="220" width="590" height="42" rx="6"/>
+  <text class="mono on-g" x="162" y="238">AIMessage(content="Cornwall has many great beaches, including</text>
+  <text class="mono on-g" x="162" y="254">  Fistral Beach (Newquay), Porthcurno ...")    ← 没有 tool_calls</text>
+  <text class="sm" x="20" y="264">→ 条件边：END</text>
+
+  <rect class="bx-d" x="150" y="280" width="590" height="40" rx="6"/>
+  <text class="sm" x="162" y="298">模型每次被调用时看到的都是当前的完整列表 —— 所以第 ④ 步它能读到工具返回的资料。</text>
+  <text class="sm" x="162" y="313">tool_call_id 把「请求」和「结果」配成对；一次可以有多个并行的工具调用。</text>
+</svg>
+<figcaption>图 11-4　消息列表的四种消息，恰好对应循环的四个阶段</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; 这其实就是「智能体式 RAG」</div>
+  <p>
+    仔细看：检索工具返回资料，模型根据资料作答 —— 这不就是 RAG 吗？区别在于<strong>检索不再是固定步骤，而是模型可选的动作</strong>。
+    它可以不检索（比如你只是打个招呼），也可以换着关键词检索好几次。检索用的查询词也是模型自己写的 —— 相当于自带了第 9 章的查询重写。
+  </p>
+</div>
+
+<h2 id="multi">再加一个工具：天气预报</h2>
+
+<p>加工具非常简单：写函数、加说明、放进列表。先用一个<strong>模拟</strong>的天气服务（第 13 章换成真的）：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_02_02.py">
+<pre>
+import random
+from typing import Literal, Optional
+
+class WeatherForecast(TypedDict):
+    town: str
+    weather: Literal["sunny", "foggy", "rainy", "windy"]
+    temperature: int
+
+class WeatherForecastService:
+    """模拟的天气服务：随机返回天气和气温。"""
+    _weather_options = ["sunny", "foggy", "rainy", "windy"]
+
+    @classmethod
+    def get_forecast(cls, town: str) -&gt; Optional[WeatherForecast]:
+        return WeatherForecast(town=town,
+                               weather=random.choice(cls._weather_options),
+                               temperature=random.randint(18, 31))
+
+@tool(description="Search travel information about destinations in England.")
+def search_travel_info(query: str) -&gt; str:
+    ...   # 同前
+
+@tool(description="Get the weather forecast, given a town name.")
+def weather_forecast(town: str) -&gt; dict:
+    forecast = WeatherForecastService.get_forecast(town)
+    if forecast is None:
+        return {"error": f"No weather data available for '{town}'."}
+    return forecast
+
+TOOLS = [search_travel_info, weather_forecast]          # ← 只是列表里多了一项
+llm_with_tools = llm_model.bind_tools(TOOLS)
+tools_execution_node = ToolsExecutionNode(TOOLS)
+# 图的结构完全不用改
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="main.ts">
+<pre>
+const WEATHER_OPTIONS = ["sunny", "foggy", "rainy", "windy"] as const;
+
+/** 模拟的天气服务：随机返回天气和气温。 */
+function getForecast(town: string) {
+  return {
+    town,
+    weather: WEATHER_OPTIONS[Math.floor(Math.random() * WEATHER_OPTIONS.length)],
+    temperature: 18 + Math.floor(Math.random() * 14),
+  };
+}
+
+const weatherForecast = tool(
+  async ({ town }) =&gt; JSON.stringify(getForecast(town)),
+  {
+    name: "weather_forecast",
+    description: "Get the weather forecast, given a town name.",
+    schema: z.object({ town: z.string().describe("Name of the town") }),
+  },
+);
+
+const TOOLS = [searchTravelInfo, weatherForecast];      // ← 只是数组里多了一项
+const llmWithTools = llmModel.bindTools(TOOLS);
+// 图的结构完全不用改
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="TravelTools.java">
+<pre>
+public class TravelTools {
+    record WeatherForecast(String town, String weather, int temperature) {}
+
+    private static final List&lt;String&gt; WEATHER_OPTIONS = List.of("sunny", "foggy", "rainy", "windy");
+    private final Random random = new Random();
+
+    @Tool("Search travel information about destinations in England.")
+    public String searchTravelInfo(@P("What to search for") String query) {
+        return kb.search(query);
+    }
+
+    // ← 只是类里多了一个 @Tool 方法。返回的 record 会被自动序列化成 JSON 交给模型
+    @Tool("Get the weather forecast, given a town name.")
+    public WeatherForecast weatherForecast(@P("Name of the town") String town) {
+        return new WeatherForecast(town,
+                WEATHER_OPTIONS.get(random.nextInt(WEATHER_OPTIONS.size())),
+                18 + random.nextInt(14));
+    }
+}
+</pre>
+</div>
+</div>
+
+<h3>模型偷懒了怎么办</h3>
+
+<p>
+  问 "Suggest two Cornwall beach towns with nice weather"（推荐两个天气好的康沃尔海滨小镇）。
+  理想的过程是：先用搜索工具找海滨小镇，再逐个查天气。但实际上，模型常常<strong>跳过搜索</strong>，直接凭自己的记忆报出两个镇名去查天气 ——
+  答案看着没毛病，却绕开了你的知识库。
+</p>
+
+<p>解决办法是加一条<strong>系统消息</strong>，明确规定「需要的信息只能从工具获取」：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+SYSTEM_MESSAGE = SystemMessage(content="""You are a helpful assistant
+that can search travel information and get the weather forecast.
+Only use the tools to find the information you need (including town names).""")
+
+def llm_node(state: AgentState):
+    # 系统消息放在最前面；注意是新建一个列表，而不是修改 state
+    messages = [SYSTEM_MESSAGE, *state["messages"]]
+    response_message = llm_with_tools.invoke(messages)
+    return {"messages": [response_message]}
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const SYSTEM_MESSAGE = new SystemMessage(`You are a helpful assistant
+that can search travel information and get the weather forecast.
+Only use the tools to find the information you need (including town names).`);
+
+async function llmNode(state: AgentState) {
+  // 系统消息放在最前面；注意是新建一个数组，而不是修改 state
+  const responseMessage = await llmWithTools.invoke([SYSTEM_MESSAGE, ...state.messages]);
+  return { messages: [responseMessage] };
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 在 runAgent() 里，把系统消息作为列表的第一条：
+List&lt;ChatMessage&gt; messages = new ArrayList&lt;&gt;();
+messages.add(SystemMessage.from("""
+        You are a helpful assistant that can search travel information
+        and get the weather forecast.
+        Only use the tools to find the information you need (including town names)."""));
+messages.add(UserMessage.from(question));
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 与仓库代码的一处差别</div>
+  <p>
+    仓库的 <code>main_02_02.py</code> 是把系统消息 <code>append</code> 到 <code>state["messages"]</code> 这个列表的<strong>末尾</strong>。
+    这样做有两个副作用：直接修改了状态对象；循环每转一圈就多追加一条。
+    上面改成「新建列表、系统消息放最前」，是更常见也更稳妥的写法。
+  </p>
+</div>
+
+<p>加上之后，同一个问题的执行过程变成了我们期望的样子：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="多工具请求的执行过程：先搜索海滨小镇，再并行查询多个镇的天气，最后给出推荐">
+  <rect class="bx-a" x="14" y="56" width="92" height="56" rx="8"/><text class="lbl on-a" x="60" y="80" text-anchor="middle">LLM</text><text class="sm" x="60" y="98" text-anchor="middle">第 1 次</text>
+  <rect class="bx-b" x="142" y="56" width="150" height="56" rx="8"/>
+  <text class="mono on-b" x="217" y="78" text-anchor="middle">search_travel_info</text><text class="sm" x="217" y="98" text-anchor="middle">"beach towns in Cornwall"</text>
+  <rect class="bx-a" x="328" y="56" width="92" height="56" rx="8"/><text class="lbl on-a" x="374" y="80" text-anchor="middle">LLM</text><text class="sm" x="374" y="98" text-anchor="middle">第 2 次</text>
+  <rect class="bx-b" x="456" y="16" width="160" height="36" rx="6"/><text class="mono on-b" x="536" y="39" text-anchor="middle">weather("Newquay")</text>
+  <rect class="bx-b" x="456" y="66" width="160" height="36" rx="6"/><text class="mono on-b" x="536" y="89" text-anchor="middle">weather("St Ives")</text>
+  <rect class="bx-b" x="456" y="116" width="160" height="36" rx="6"/><text class="mono on-b" x="536" y="139" text-anchor="middle">weather("Bude")</text>
+  <rect class="bx-g" x="652" y="56" width="94" height="56" rx="8"/><text class="lbl on-g" x="699" y="80" text-anchor="middle">LLM</text><text class="sm" x="699" y="98" text-anchor="middle">最终推荐</text>
+  <path class="ln" d="M108 84 H138" marker-end="url(#ar)"/><path class="ln" d="M294 84 H324" marker-end="url(#ar)"/>
+  <path class="ln" d="M422 74 L452 38" marker-end="url(#ar)"/><path class="ln" d="M422 84 H452" marker-end="url(#ar)"/><path class="ln" d="M422 94 L452 130" marker-end="url(#ar)"/>
+  <path class="ln" d="M618 34 L648 72" marker-end="url(#ar)"/><path class="ln" d="M618 84 H648" marker-end="url(#ar)"/><path class="ln" d="M618 134 L648 98" marker-end="url(#ar)"/>
+  <text class="sm" x="536" y="166" text-anchor="middle">一条 AIMessage 里可以带多个 tool_calls</text>
+</svg>
+<figcaption>图 11-5　镇名来自你的知识库，而不是模型的记忆</figcaption>
+</figure>
+
+<h2 id="prebuilt">用预置组件：一行顶五十行</h2>
+
+<p>
+  「LLM 节点 + 工具节点 + 条件边 + 回边」这个结构太常见了，LangGraph 直接提供了现成的实现。
+  理解了前面手写的版本，再看它就毫无神秘感：
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_03_01.py">
+<pre>
+from langgraph.prebuilt import create_react_agent
+from langgraph.managed.is_last_step import RemainingSteps
+
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+    remaining_steps: RemainingSteps          # 预置智能体用它限制最多循环几步
+
+travel_info_agent = create_react_agent(
+    model=llm_model,
+    tools=TOOLS,
+    state_schema=AgentState,
+    prompt="You are a helpful assistant that can search travel information and get the "
+           "weather forecast. Only use the tools to find the information you need "
+           "(including town names).",
+)
+
+# 用法和之前完全一样
+result = travel_info_agent.invoke(
+    {"messages": [HumanMessage(content="Suggest two Cornwall beach towns with nice weather")]})
+print(result["messages"][-1].content)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="prebuilt.ts">
+<pre>
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
+
+const travelInfoAgent = createReactAgent({
+  llm: llmModel,
+  tools: TOOLS,
+  prompt: "You are a helpful assistant that can search travel information and get the " +
+          "weather forecast. Only use the tools to find the information you need " +
+          "(including town names).",
+});
+
+// 用法和之前完全一样
+const result = await travelInfoAgent.invoke({
+  messages: [new HumanMessage("Suggest two Cornwall beach towns with nice weather")],
+});
+console.log(result.messages.at(-1)?.content);
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Prebuilt.java">
+<pre>
+// LangChain4j 的 AI Service 自带完整的工具循环：
+// 只要用 .tools(...) 注册带 @Tool 的对象，「调模型 → 执行工具 → 再调模型」就自动进行。
+interface TravelInfoAgent {
+    @SystemMessage("""
+            You are a helpful assistant that can search travel information and get the
+            weather forecast. Only use the tools to find the information you need
+            (including town names).""")
+    String chat(String userMessage);
+}
+
+TravelInfoAgent travelInfoAgent = AiServices.builder(TravelInfoAgent.class)
+        .chatModel(llm)
+        .tools(new TravelTools(kb))
+        .build();
+
+System.out.println(travelInfoAgent.chat("Suggest two Cornwall beach towns with nice weather"));
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 关于函数名</div>
+  <p>
+    仓库基于 LangGraph 1.0，使用的是 <code>langgraph.prebuilt.create_react_agent</code>。
+    在 LangChain 1.0 中，官方推荐的新入口是 <code>langchain.agents.create_agent</code>（TypeScript 里是 <code>langchain</code> 包的 <code>createAgent</code>），
+    两者思路相同、参数略有差异。读到不同教程用了不同名字时不必困惑。
+  </p>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>手写的图</th><th>预置的 ReAct 智能体</th></tr>
+  <tr><td>代码量</td><td>多</td><td>极少</td></tr>
+  <tr><td>可定制性</td><td>完全可控：可以在任意位置插入节点（审批、日志、改写……）</td><td>通过参数和钩子定制（如第 14 章用的 <code>pre_model_hook</code>）</td></tr>
+  <tr><td>适合</td><td>学习原理；流程有特殊要求</td><td>绝大多数标准场景；作为多智能体系统里的「零件」</td></tr>
+</table>
+</div>
+
+<h2 id="debug">调试智能体</h2>
+
+<p>智能体的执行路径是运行时才决定的，调试时最需要回答的问题是「<strong>它为什么这么走</strong>」。两个工具：</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128027;</span><h4>断点调试</h4><p>在 <code>llm_node</code> 和工具节点各打一个断点，单步执行，观察 <code>state["messages"]</code> 如何增长、每次的 <code>tool_calls</code> 是什么。仓库的 <code>.vscode/launch.json</code> 已经配好了。</p></div>
+  <div class="card"><span class="ic">&#128269;</span><h4>LangSmith 追踪</h4><p>设置第 7 章的那几个环境变量即可。追踪视图会把每一次 LLM 调用、每一次工具调用按顺序展开，连同输入输出和耗时。</p></div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 智能体的三个常见失控方式</div>
+  <ul>
+    <li><strong>不用工具</strong>：直接凭记忆回答。→ 写清工具描述，用系统消息约束。</li>
+    <li><strong>停不下来</strong>：反复调用同一个工具。→ 设置最大步数（LangGraph 的 <code>recursion_limit</code>，或上面的 <code>remaining_steps</code>）。</li>
+    <li><strong>参数填错</strong>：比如把整句话当成镇名。→ 给参数加描述和类型约束；工具内部做校验，出错时返回<em>清晰的错误信息</em>，模型通常会自己纠正并重试。</li>
+  </ul>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li><strong>工具调用</strong>是一个协议：模型输出「我想调用某函数 + 参数」，你的程序执行后把结果发回。模型本身不执行任何东西。</li>
+  <li><strong>工具 = 函数 + 说明书</strong>（名称、描述、参数格式）。描述的质量直接决定模型用得对不对。</li>
+  <li><strong>ReAct</strong>：思考 → 行动 → 观察，循环到模型认为可以回答为止。</li>
+  <li>最小的智能体图：<code>llm_node</code> ⇄ <code>tools</code>，由 <code>tools_condition</code> 判断最后一条消息有没有 <code>tool_calls</code>。</li>
+  <li>状态是一个<strong>只追加</strong>的消息列表（reducer）。四种消息：Human、AI（可带 tool_calls）、Tool、System。</li>
+  <li>加工具只需往列表里添一项；用系统消息引导模型「只用工具获取信息」，可以减少幻觉。</li>
+  <li><code>create_react_agent</code>（Java 里是带 <code>tools</code> 的 AI Service）把这一切打包成几行代码。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>跑通单工具版本，在工具函数里加一行打印，确认它真的被调用了，并看看模型自己写的查询词是什么。</li>
+    <li>只对它说 "Hello!"。工具被调用了吗？为什么？</li>
+    <li>加上天气工具但<strong>不加</strong>系统消息，问「推荐两个天气好的海滨小镇」，观察它是否跳过搜索；加上系统消息后再试。</li>
+    <li>把 <code>weather_forecast</code> 的描述改成一句含糊的 "A tool."，看模型还会不会正确使用它。</li>
+    <li>自己加第三个工具：<code>currency_convert(amount, from_currency, to_currency)</code>（汇率可以写死），问一个需要它的问题。</li>
+    <li>开启 LangSmith，找到一次多工具请求的追踪，数一数模型总共被调用了几次。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

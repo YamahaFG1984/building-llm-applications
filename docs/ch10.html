@@ -1,0 +1,1008 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 10 章 · 查询生成、路由与检索后处理 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="10">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 10 章</span>
+<h1>查询生成、路由与检索后处理</h1>
+<p class="lede">
+  到目前为止，「检索」一直等于「去向量库里做相似度搜索」。但真实世界的数据不只躺在向量库里：
+  酒店价格在关系数据库里，人物关系在图数据库里。这一章把 RAG 的检索环节<strong>打开</strong>：
+  让 LLM 为不同的数据源生成对应的查询语句、决定该去哪个数据源，并在检索之后再筛一遍结果。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>用「自查询」从问题里自动提取元数据过滤条件</li>
+    <li>让 LLM 把自然语言翻译成 SQL，并安全地执行</li>
+    <li>了解语义 SQL 和知识图谱 RAG 的思路</li>
+    <li>搭一个路由器，把问题分发到合适的数据源</li>
+    <li>用 RAG Fusion（倒数排名融合）对多路检索结果重新排序</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="map">本章地图</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="高级 RAG 的检索环节：路由决定数据源，查询生成为每种数据源写出查询语句，后处理筛选排序结果">
+  <rect class="bx" x="14" y="124" width="84" height="52" rx="8"/><text class="lbl" x="56" y="155" text-anchor="middle">用户问题</text>
+
+  <rect class="bx-a" x="130" y="114" width="100" height="72" rx="10"/>
+  <text class="ttl on-a" x="180" y="142" text-anchor="middle">① 路由</text><text class="sm" x="180" y="162" text-anchor="middle">去哪儿查？</text>
+  <path class="ln" d="M100 150 H126" marker-end="url(#ar)"/>
+
+  <rect class="bx-b" x="276" y="16" width="150" height="52" rx="8"/>
+  <text class="lbl on-b" x="351" y="38" text-anchor="middle">② 自查询</text><text class="sm" x="351" y="56" text-anchor="middle">语义查询 + 元数据过滤</text>
+  <rect class="bx-b" x="276" y="88" width="150" height="52" rx="8"/>
+  <text class="lbl on-b" x="351" y="110" text-anchor="middle">② Text-to-SQL</text><text class="sm" x="351" y="128" text-anchor="middle">生成 SQL</text>
+  <rect class="bx-b" x="276" y="160" width="150" height="52" rx="8"/>
+  <text class="lbl on-b" x="351" y="182" text-anchor="middle">② 语义 SQL</text><text class="sm" x="351" y="200" text-anchor="middle">SQL + 向量距离</text>
+  <rect class="bx-b" x="276" y="232" width="150" height="52" rx="8"/>
+  <text class="lbl on-b" x="351" y="254" text-anchor="middle">② Text-to-Cypher</text><text class="sm" x="351" y="272" text-anchor="middle">生成图查询</text>
+  <path class="ln-a" d="M232 134 L272 44" marker-end="url(#ar-a)"/><path class="ln-a" d="M232 144 L272 116" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M232 156 L272 184" marker-end="url(#ar-a)"/><path class="ln-a" d="M232 166 L272 256" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-p" x="460" y="16" width="100" height="52" rx="8"/><text class="lbl on-p" x="510" y="46" text-anchor="middle">向量库</text>
+  <rect class="bx-p" x="460" y="88" width="100" height="52" rx="8"/><text class="lbl on-p" x="510" y="118" text-anchor="middle">关系数据库</text>
+  <rect class="bx-p" x="460" y="160" width="100" height="52" rx="8"/><text class="lbl on-p" x="510" y="190" text-anchor="middle">pgvector</text>
+  <rect class="bx-p" x="460" y="232" width="100" height="52" rx="8"/><text class="lbl on-p" x="510" y="262" text-anchor="middle">图数据库</text>
+  <path class="ln" d="M428 42 H456" marker-end="url(#ar)"/><path class="ln" d="M428 114 H456" marker-end="url(#ar)"/>
+  <path class="ln" d="M428 186 H456" marker-end="url(#ar)"/><path class="ln" d="M428 258 H456" marker-end="url(#ar)"/>
+
+  <rect class="bx-g" x="596" y="114" width="80" height="72" rx="10"/>
+  <text class="ttl on-g" x="636" y="142" text-anchor="middle">③ 后处理</text><text class="sm" x="636" y="162" text-anchor="middle">筛选 / 重排</text>
+  <path class="ln" d="M562 42 L592 130" marker-end="url(#ar)"/><path class="ln" d="M562 114 L592 142" marker-end="url(#ar)"/>
+  <path class="ln" d="M562 186 L592 160" marker-end="url(#ar)"/><path class="ln" d="M562 258 L592 172" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="700" y="124" width="48" height="52" rx="8"/><text class="lbl on-a" x="724" y="155" text-anchor="middle">LLM</text>
+  <path class="ln" d="M678 150 H696" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 10-1　检索环节的三件事：选数据源、写查询、筛结果</figcaption>
+</figure>
+
+<h2 id="selfquery">自查询：把问题里的条件变成过滤器</h2>
+
+<p>
+  用户问：「英国小镇纽基（Newquay）有什么节日活动？」纯语义检索可能把布莱顿的节日也找回来，因为「节日活动」的意思太像了。
+  但如果每个文本块都带着 <code>destination</code> 元数据，我们就可以<strong>先按元数据精确过滤，再做语义搜索</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="自查询：LLM 把问题拆成语义查询和元数据过滤条件，向量库先过滤再做相似度搜索">
+  <rect class="bx" x="20" y="60" width="230" height="64" rx="8"/>
+  <text class="sm" x="135" y="80" text-anchor="middle">用户问题</text>
+  <text class="lbl" x="135" y="100" text-anchor="middle">纽基有什么节日活动？</text>
+  <rect class="bx-a" x="290" y="70" width="70" height="44" rx="8"/><text class="lbl on-a" x="325" y="97" text-anchor="middle">LLM</text>
+  <path class="ln" d="M252 92 H286" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="410" y="20" width="180" height="56" rx="8"/>
+  <text class="sm on-b" x="500" y="42" text-anchor="middle">语义查询（模糊匹配）</text>
+  <text class="mono" x="500" y="62" text-anchor="middle">"events festivals"</text>
+  <rect class="bx-g" x="410" y="112" width="180" height="56" rx="8"/>
+  <text class="sm on-g" x="500" y="134" text-anchor="middle">元数据过滤（精确匹配）</text>
+  <text class="mono" x="500" y="154" text-anchor="middle">destination == "Newquay"</text>
+  <path class="ln-b" d="M362 84 L406 54" marker-end="url(#ar-b)"/><path class="ln-g" d="M362 100 L406 134" marker-end="url(#ar-g)"/>
+  <rect class="bx-p" x="640" y="56" width="100" height="72" rx="10"/>
+  <text class="lbl on-p" x="690" y="84" text-anchor="middle">向量库</text>
+  <text class="sm" x="690" y="102" text-anchor="middle">先过滤</text><text class="sm" x="690" y="118" text-anchor="middle">再比相似度</text>
+  <path class="ln" d="M592 48 L636 78" marker-end="url(#ar)"/><path class="ln" d="M592 140 L636 108" marker-end="url(#ar)"/>
+  <text class="sm" x="380" y="192" text-anchor="middle">「自查询」= LLM 自己从问题里把过滤条件识别出来</text>
+</svg>
+<figcaption>图 10-2　自查询工作流</figcaption>
+</figure>
+
+<h3>入库时带上元数据</h3>
+
+<p>过滤的前提是数据里有可过滤的字段。入库时给每个文档加上 <code>destination</code> 和 <code>region</code>；切块后，每个块会继承这些元数据。</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_core.documents import Document
+
+uk_destinations = [
+    ("Cornwall", "Cornwall"), ("Newquay", "Cornwall"), ("St_Ives", "Cornwall"),
+    ("Penzance", "Cornwall"),  # ……更多康沃尔的目的地
+    ("East_Sussex", "East_Sussex"), ("Brighton", "East_Sussex"),
+    ("Hastings_(England)", "East_Sussex"),  # ……
+]
+wikivoyage_root_url = "https://en.wikivoyage.org/wiki"
+
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+
+for destination, region in uk_destinations:
+    url = f'{wikivoyage_root_url}/{destination}'
+    docs = AsyncHtmlLoader(url).load()
+    docs_with_metadata = [
+        Document(page_content=d.page_content,
+                 metadata={'source': url, 'destination': destination, 'region': region})
+        for d in docs]
+    text_docs = html2text_transformer.transform_documents(docs_with_metadata)
+    chunks = text_splitter.split_documents(text_docs)     # 每个块继承文档的元数据
+    uk_with_metadata_collection.add_documents(documents=chunks)
+
+# 手动指定过滤条件的检索
+metadata_retriever = uk_with_metadata_collection.as_retriever(
+    search_kwargs={'k': 2, 'filter': {'destination': 'Newquay'}})
+print(metadata_retriever.invoke("Events or festivals"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const ukDestinations: [string, string][] = [
+  ["Cornwall", "Cornwall"], ["Newquay", "Cornwall"], ["St_Ives", "Cornwall"],
+  ["Penzance", "Cornwall"],  // ……
+  ["East_Sussex", "East_Sussex"], ["Brighton", "East_Sussex"],
+  ["Hastings_(England)", "East_Sussex"],  // ……
+];
+const wikivoyageRootUrl = "https://en.wikivoyage.org/wiki";
+
+const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 100 });
+
+for (const [destination, region] of ukDestinations) {
+  const url = `${wikivoyageRootUrl}/${destination}`;
+  const text = await fetchAsText(url);              // 抓取并去掉 HTML 标签
+  const chunks = await textSplitter.createDocuments(
+    [text], [{ source: url, destination, region }]);   // 每个块都带上元数据
+  await ukWithMetadataCollection.addDocuments(chunks);
+}
+
+// 手动指定过滤条件的检索
+const metadataRetriever = ukWithMetadataCollection.asRetriever({
+  k: 2, filter: { destination: "Newquay" } });
+console.log(await metadataRetriever.invoke("Events or festivals"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import static dev.langchain4j.store.embedding.filter.MetadataFilterBuilder.metadataKey;
+
+record Destination(String name, String region) {}
+List&lt;Destination&gt; ukDestinations = List.of(
+        new Destination("Cornwall", "Cornwall"), new Destination("Newquay", "Cornwall"),
+        new Destination("Brighton", "East_Sussex") /* …… */);
+
+var splitter = DocumentSplitters.recursive(1000, 100);
+
+for (Destination d : ukDestinations) {
+    String url = "https://en.wikivoyage.org/wiki/" + d.name();
+    Document doc = Document.from(Jsoup.connect(url).get().body().text(),
+            Metadata.from(Map.of("source", url, "destination", d.name(), "region", d.region())));
+    List&lt;TextSegment&gt; chunks = splitter.split(doc);       // 每个块继承文档的元数据
+    store.addAll(embeddingModel.embedAll(chunks).content(), chunks);
+}
+
+// 手动指定过滤条件的检索
+var request = EmbeddingSearchRequest.builder()
+        .queryEmbedding(embeddingModel.embed("Events or festivals").content())
+        .filter(metadataKey("destination").isEqualTo("Newquay"))
+        .maxResults(2).build();
+store.search(request).matches().forEach(m -&gt; System.out.println(m.embedded().text()));
+</pre>
+</div>
+</div>
+
+<h3>让 LLM 自动生成过滤条件</h3>
+
+<p>
+  两种做法。一是用 LangChain 现成的 <code>SelfQueryRetriever</code>：告诉它有哪些元数据字段，它全包。
+  二是自己用<strong>结构化输出</strong>实现：让模型把问题填进一个「搜索表单」，我们再把表单变成过滤器 —— 多写几行，但每一步都看得见、改得了。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+# —— 做法一：SelfQueryRetriever ——
+from langchain_classic.chains.query_constructor.base import AttributeInfo
+from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
+
+metadata_field_info = [
+    AttributeInfo(name="destination", type="string",
+                  description="The specific UK destination to be searched"),
+    AttributeInfo(name="region", type="string",
+                  description="The name of the UK region to be searched"),
+]
+self_query_retriever = SelfQueryRetriever.from_llm(
+    llm, uk_with_metadata_collection,
+    "Tourist information about UK destinations",     # 对文档内容的一句话描述
+    metadata_field_info, verbose=True)
+
+question = "Tell me about events or festivals in the UK town of Newquay"
+print(self_query_retriever.invoke(question))
+
+# —— 做法二：结构化输出 ——
+from pydantic import BaseModel, Field
+
+class DestinationSearch(BaseModel):
+    """Search over a vector database of tourist destinations."""
+    content_search: str = Field("", description="Similarity search query applied to tourist destinations.")
+    destination: str = Field(..., description="The specific UK destination to be searched.")
+    region: str = Field(..., description="The name of the UK region to be searched.")
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", """You are an expert at converting user questions into vector database queries.
+You have access to a database of tourist destinations.
+Given a question, return a database query optimized to retrieve the most relevant results.
+If there are acronyms or words you are not familiar with, do not try to rephrase them."""),
+    ("human", "{question}"),
+])
+query_generator = prompt | llm.with_structured_output(
+    DestinationSearch, method="function_calling")
+
+def build_filter(search: DestinationSearch) -&gt; dict:
+    conditions = [{field: value}
+                  for field, value in [("destination", search.destination),
+                                       ("region", search.region)] if value]
+    if len(conditions) == 1:
+        return conditions[0]
+    return {"$and": conditions}                      # Chroma 的过滤语法
+
+structured_query = query_generator.invoke(question)
+# DestinationSearch(content_search='events festivals', destination='Newquay', region='Cornwall')
+
+metadata_retriever = uk_with_metadata_collection.as_retriever(
+    search_kwargs={'k': 3, 'filter': build_filter(structured_query)})
+print(metadata_retriever.invoke(structured_query.content_search))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// 用结构化输出实现自查询
+import { z } from "zod";
+
+const DestinationSearch = z.object({
+  content_search: z.string().describe("Similarity search query applied to tourist destinations."),
+  destination: z.string().nullable().describe("The specific UK destination to be searched."),
+  region: z.string().nullable().describe("The name of the UK region to be searched."),
+}).describe("Search over a vector database of tourist destinations.");
+
+const prompt = ChatPromptTemplate.fromMessages([
+  ["system", `You are an expert at converting user questions into vector database queries.
+You have access to a database of tourist destinations.
+Given a question, return a database query optimized to retrieve the most relevant results.
+If there are acronyms or words you are not familiar with, do not try to rephrase them.`],
+  ["human", "{question}"],
+]);
+const queryGenerator = prompt.pipe(llm.withStructuredOutput(DestinationSearch));
+
+function buildFilter(search: z.infer&lt;typeof DestinationSearch&gt;) {
+  const conditions: Record&lt;string, string&gt;[] = [];
+  if (search.destination) conditions.push({ destination: search.destination });
+  if (search.region) conditions.push({ region: search.region });
+  if (conditions.length === 0) return undefined;
+  return conditions.length === 1 ? conditions[0] : { $and: conditions };   // Chroma 的过滤语法
+}
+
+const question = "Tell me about events or festivals in the UK town of Newquay";
+const structuredQuery = await queryGenerator.invoke({ question });
+// { content_search: 'events festivals', destination: 'Newquay', region: 'Cornwall' }
+
+const metadataRetriever = ukWithMetadataCollection.asRetriever({
+  k: 3, filter: buildFilter(structuredQuery) });
+console.log(await metadataRetriever.invoke(structuredQuery.content_search));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 用结构化输出实现自查询
+import dev.langchain4j.model.output.structured.Description;
+import dev.langchain4j.store.embedding.filter.Filter;
+
+record DestinationSearch(
+        @Description("Similarity search query applied to tourist destinations.") String contentSearch,
+        @Description("The specific UK destination to be searched, or null.") String destination,
+        @Description("The name of the UK region to be searched, or null.") String region) {}
+
+interface QueryGenerator {
+    @SystemMessage("""
+            You are an expert at converting user questions into vector database queries.
+            You have access to a database of tourist destinations.
+            Given a question, return a database query optimized to retrieve the most relevant results.
+            If there are acronyms or words you are not familiar with, do not try to rephrase them.""")
+    DestinationSearch generate(String question);
+}
+
+static Filter buildFilter(DestinationSearch s) {
+    Filter filter = null;
+    if (s.destination() != null &amp;&amp; !s.destination().isBlank())
+        filter = metadataKey("destination").isEqualTo(s.destination());
+    if (s.region() != null &amp;&amp; !s.region().isBlank()) {
+        Filter byRegion = metadataKey("region").isEqualTo(s.region());
+        filter = (filter == null) ? byRegion : filter.and(byRegion);
+    }
+    return filter;
+}
+
+var generator = AiServices.create(QueryGenerator.class, llm);
+DestinationSearch q = generator.generate(
+        "Tell me about events or festivals in the UK town of Newquay");
+
+var request = EmbeddingSearchRequest.builder()
+        .queryEmbedding(embeddingModel.embed(q.contentSearch()).content())
+        .filter(buildFilter(q))
+        .maxResults(3).build();
+store.search(request).matches().forEach(m -&gt; System.out.println(m.embedded().text()));
+</pre>
+</div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 过滤是精确匹配，一个字母都不能差</div>
+  <p>
+    模型可能输出 <code>"St Ives"</code>，而库里存的是 <code>"St_Ives"</code> —— 结果就是一条都查不到。
+    常见的对策：在字段描述里<strong>列出所有合法取值</strong>（或用枚举类型约束输出）；
+    入库和查询时对取值做同样的规范化；过滤后结果为空时，退回到不带过滤的普通检索。
+  </p>
+</div>
+
+<h2 id="sql">Text-to-SQL：让 LLM 写 SQL</h2>
+
+<p>
+  「卡迪夫有哪些住宿优惠？」这种问题的答案在<strong>关系数据库</strong>里，语义搜索帮不上忙，需要的是一条精确的 SQL。
+  示例数据库 <code>UkBooking</code> 有四张表（建表脚本在 <code>ch10/CreateUkBooking.sql</code>）：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="UkBooking 数据库的实体关系图：Destination、AccommodationType、Accommodation、Offer">
+  <rect class="bx-b" x="20" y="20" width="170" height="110" rx="8"/>
+  <text class="ttl on-b" x="105" y="42" text-anchor="middle">Destination</text>
+  <text class="mono" x="34" y="64">DestinationId PK</text><text class="mono" x="34" y="82">Name</text>
+  <text class="mono" x="34" y="100">Region</text><text class="mono" x="34" y="118">Country</text>
+
+  <rect class="bx-g" x="290" y="20" width="190" height="130" rx="8"/>
+  <text class="ttl on-g" x="385" y="42" text-anchor="middle">Accommodation</text>
+  <text class="mono" x="304" y="64">AccommodationId PK</text><text class="mono" x="304" y="82">Name, Address</text>
+  <text class="mono" x="304" y="100">DestinationId FK</text><text class="mono" x="304" y="118">AccommodationTypeId FK</text>
+  <text class="mono" x="304" y="136">Description</text>
+
+  <rect class="bx-a" x="570" y="20" width="170" height="130" rx="8"/>
+  <text class="ttl on-a" x="655" y="42" text-anchor="middle">Offer</text>
+  <text class="mono" x="584" y="64">OfferId PK</text><text class="mono" x="584" y="82">AccommodationId FK</text>
+  <text class="mono" x="584" y="100">OfferDescription</text><text class="mono" x="584" y="118">DiscountRate</text>
+  <text class="mono" x="584" y="136">StartDate, EndDate</text>
+
+  <rect class="bx-p" x="20" y="150" width="170" height="52" rx="8"/>
+  <text class="ttl on-p" x="105" y="170" text-anchor="middle">AccommodationType</text>
+  <text class="mono" x="34" y="190">TypeId PK, TypeName</text>
+
+  <path class="ln" d="M192 96 H286" marker-end="url(#ar)" marker-start="url(#ar)"/><text class="sm" x="239" y="88" text-anchor="middle">1 — N</text>
+  <path class="ln" d="M192 176 H240 V116 H286" marker-end="url(#ar)" marker-start="url(#ar)"/><text class="sm" x="239" y="194" text-anchor="middle">1 — N</text>
+  <path class="ln" d="M482 80 H566" marker-end="url(#ar)" marker-start="url(#ar)"/><text class="sm" x="524" y="72" text-anchor="middle">1 — N</text>
+</svg>
+<figcaption>图 10-3　要回答「卡迪夫的优惠」，得把三张表连起来查</figcaption>
+</figure>
+
+<p>流程分三步：<strong>把表结构告诉模型 → 模型生成 SQL → 执行 SQL 拿结果</strong>。</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_community.utilities import SQLDatabase
+from langchain_community.tools import QuerySQLDataBaseTool
+from langchain_classic.chains import create_sql_query_chain
+
+db = SQLDatabase.from_uri("sqlite:///UkBooking.db")
+
+# SQL 生成对准确性要求高，用更强的模型
+llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model="gpt-4.1")
+
+# ① 生成 SQL：这条现成的链会自动读取表结构并放进提示词
+sql_query_gen_chain = create_sql_query_chain(llm, db)
+
+# ② 清理：模型常常返回 "SQLQuery: SELECT ..." 或包在 ```sql 里，直接执行会报错
+clean_sql_prompt = ChatPromptTemplate.from_template(
+"""You are an expert in SQL Lite. You are asked to fix badly formed SQL Lite queries,
+which might contain unneeded prefixes or suffixes.
+Given the following unclean SQL statement, transform it to a clean, executable SQL
+statement for SQL lite. Always prefix column names with the table name.
+Only return an executable SQL statement which terminates with a semicolon.
+Do not return anything else. Do not include the language name or symbols like ```.
+Unclean SQL: {unclean_sql}""")
+
+full_sql_gen_chain = sql_query_gen_chain | clean_sql_prompt | llm | StrOutputParser()
+
+# ③ 执行
+sql_query_exec_chain = QuerySQLDataBaseTool(db=db)
+sql_query_gen_and_exec_chain = full_sql_gen_chain | sql_query_exec_chain | StrOutputParser()
+
+question = "Give me some offers for Cardiff, including the accommodation name"
+print(full_sql_gen_chain.invoke({"question": question}))
+# SELECT Accommodation.Name, Offer.OfferDescription, Offer.DiscountRate
+# FROM Offer JOIN Accommodation ON Offer.AccommodationId = Accommodation.AccommodationId
+# JOIN Destination ON Accommodation.DestinationId = Destination.DestinationId
+# WHERE Destination.Name = 'Cardiff' LIMIT 5;
+
+print(sql_query_gen_and_exec_chain.invoke({"question": question}))
+# [('Cardiff Bay Hotel', '20% off weekend stays', 0.2), ...]
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// npm install better-sqlite3 @types/better-sqlite3
+// 这里不用现成的链，而是直接实现三步，并用结构化输出省掉「清理 SQL」这一步。
+import Database from "better-sqlite3";
+import { z } from "zod";
+
+const db = new Database("UkBooking.db", { readonly: true });   // 只读打开！
+
+// 读出所有建表语句，作为「表结构说明」交给模型
+const schema = (db.prepare(
+  "SELECT sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL").all() as { sql: string }[])
+  .map((r) =&gt; r.sql).join("\n\n");
+
+const sqlLlm = new ChatOpenAI({ model: "gpt-4.1" });           // SQL 生成用更强的模型
+
+const sqlGenChain = ChatPromptTemplate.fromTemplate(`
+You are a SQLite expert. Given the database schema below, write one syntactically correct
+SQLite SELECT query that answers the question. Always prefix column names with the table
+name. Return at most 5 rows unless told otherwise.
+
+Schema:
+{schema}
+
+Question: {question}`)
+  .pipe(sqlLlm.withStructuredOutput(z.object({
+    sql: z.string().describe("A single executable SQLite SELECT statement"),
+  })));
+
+async function sqlRetriever(question: string): Promise&lt;string&gt; {
+  const { sql } = await sqlGenChain.invoke({ schema, question });      // ① 生成
+  if (!/^\s*select\b/i.test(sql)) throw new Error("Only SELECT is allowed");   // ② 把关
+  return JSON.stringify(db.prepare(sql).all());                        // ③ 执行
+}
+
+console.log(await sqlRetriever(
+  "Give me some offers for Cardiff, including the accommodation name"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 依赖：org.xerial:sqlite-jdbc
+import java.sql.*;
+
+record SqlQuery(@Description("A single executable SQLite SELECT statement") String sql) {}
+
+interface SqlGenerator {
+    @UserMessage("""
+            You are a SQLite expert. Given the database schema below, write one syntactically
+            correct SQLite SELECT query that answers the question. Always prefix column names
+            with the table name. Return at most 5 rows unless told otherwise.
+
+            Schema:
+            {{schema}}
+
+            Question: {{question}}""")
+    SqlQuery generate(@V("schema") String schema, @V("question") String question);
+}
+
+static String sqlRetriever(SqlGenerator generator, String question) throws SQLException {
+    // 以只读方式打开数据库
+    try (Connection conn = DriverManager.getConnection("jdbc:sqlite:file:UkBooking.db?mode=ro")) {
+
+        var schema = new StringBuilder();                      // 读出所有建表语句
+        try (var rs = conn.createStatement().executeQuery(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL")) {
+            while (rs.next()) schema.append(rs.getString(1)).append("\n\n");
+        }
+
+        String sql = generator.generate(schema.toString(), question).sql();        // ① 生成
+        if (!sql.trim().toLowerCase().startsWith("select"))                        // ② 把关
+            throw new IllegalArgumentException("Only SELECT is allowed");
+
+        var rows = new StringBuilder();                                            // ③ 执行
+        try (var rs = conn.createStatement().executeQuery(sql)) {
+            int cols = rs.getMetaData().getColumnCount();
+            while (rs.next()) {
+                for (int i = 1; i &lt;= cols; i++) rows.append(rs.getString(i)).append(i &lt; cols ? " | " : "\n");
+            }
+        }
+        return rows.toString();
+    }
+}
+</pre>
+</div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 执行模型生成的 SQL，等于让陌生人操作你的数据库</div>
+  <ul>
+    <li><strong>用只读账号 / 只读连接</strong>。这是最重要的一条：即使模型（或被恶意提示词操纵的模型）写出 <code>DROP TABLE</code>，也执行不了。</li>
+    <li><strong>只暴露需要的表和列</strong>，不要把含有敏感信息的表结构交给模型。</li>
+    <li><strong>限制返回行数和执行时间</strong>，防止一条慢查询拖垮数据库。</li>
+    <li>上面代码里「以 SELECT 开头」的检查只是聊胜于无的辅助手段，<strong>不能</strong>代替数据库层面的权限控制。</li>
+  </ul>
+</div>
+
+<h3>语义 SQL：在关系数据库里做模糊匹配</h3>
+
+<p>
+  普通 SQL 的 <code>WHERE first_name = 'Roberto'</code> 只能精确匹配，<code>LIKE 'Rob%'</code> 也只能匹配前缀，找不到 Bob 或 Bert。
+  PostgreSQL 的 <strong>pgvector</strong> 扩展让你给某一列存一份向量，从而在 SQL 里按<strong>语义距离</strong>排序：
+</p>
+
+<div class="code" data-lang="sql">
+<pre>
+-- 1. 给要做语义搜索的字段加一个向量列
+ALTER TABLE users ADD COLUMN first_name_embedding VECTOR(1536);
+
+-- 2.（在应用代码里）计算每个 first_name 的向量并 UPDATE 进去
+
+-- 3. 查询：把 'Roberto' 的向量作为参数传入，按距离从近到远排序
+SELECT first_name
+FROM users
+WHERE first_name_embedding IS NOT NULL
+ORDER BY first_name_embedding &lt;-&gt; $1        -- &lt;-&gt; 是 pgvector 的距离运算符
+LIMIT 10;
+</pre>
+</div>
+
+<p>
+  它的威力在于<strong>把精确条件和语义条件写在同一条 SQL 里</strong>，还能跨表 JOIN：
+  「价格低于 100 英镑（精确）、描述里有『海景』的意思（语义）的酒店」。
+  和 Text-to-SQL 结合的方式也一样：在提示词里告诉模型哪些列有向量、距离运算符怎么用，让它生成这种查询。
+</p>
+
+<h2 id="graph">图数据库与知识图谱 RAG</h2>
+
+<p>
+  有些知识的核心是<strong>关系</strong>：谁是谁的上级、哪个零件属于哪个部件、哪种药和哪种药不能同服。
+  这类数据用<strong>图数据库</strong>表示最自然：<em>节点</em>是实体，<em>边</em>是关系。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="图数据示例：Roberto 的职业是软件开发，是国际米兰的球迷，国际米兰属于意甲">
+  <rect class="bx-b" x="40" y="66" width="130" height="48" rx="24"/>
+  <text class="ttl on-b" x="105" y="88" text-anchor="middle">Roberto</text><text class="sm" x="105" y="104" text-anchor="middle">Person</text>
+  <rect class="bx-g" x="310" y="14" width="170" height="48" rx="24"/>
+  <text class="ttl on-g" x="395" y="36" text-anchor="middle">SoftwareDevelopment</text><text class="sm" x="395" y="52" text-anchor="middle">Profession</text>
+  <rect class="bx-a" x="320" y="118" width="150" height="48" rx="24"/>
+  <text class="ttl on-a" x="395" y="140" text-anchor="middle">InterMilan</text><text class="sm" x="395" y="156" text-anchor="middle">SoccerTeam</text>
+  <rect class="bx-p" x="600" y="118" width="130" height="48" rx="24"/>
+  <text class="ttl on-p" x="665" y="140" text-anchor="middle">SerieA</text><text class="sm" x="665" y="156" text-anchor="middle">SoccerLeague</text>
+  <path class="ln" d="M168 76 L306 44" marker-end="url(#ar)"/><text class="sm" x="230" y="48" text-anchor="middle">hasOccupation</text>
+  <path class="ln" d="M168 104 L316 136" marker-end="url(#ar)"/><text class="sm" x="230" y="140" text-anchor="middle">isFanOf</text>
+  <path class="ln" d="M472 142 H596" marker-end="url(#ar)"/><text class="sm" x="534" y="134" text-anchor="middle">playsIn</text>
+</svg>
+<figcaption>图 10-4　图的基本单位是三元组：(主体, 关系, 客体)</figcaption>
+</figure>
+
+<p>LLM 让图数据库好用了很多，它在三个环节都能出力，合起来就是<strong>知识图谱 RAG（KG-RAG）</strong>：</p>
+
+<ol class="steps">
+  <li><strong>抽取</strong>从非结构化文本里抽取实体和关系，构建图谱。</li>
+  <li><strong>生成查询</strong>把自然语言问题翻译成 Cypher（Neo4j）或 SPARQL。和 Text-to-SQL 同理，需要少样本示例和较强的模型。</li>
+  <li><strong>生成答案</strong>把「问题 + 查询语句 + 查询结果」交给模型，转成自然语言回答。这一步用便宜的小模型就够了。</li>
+</ol>
+
+<div class="code" data-lang="text" data-file="Text-to-Cypher 示意">
+<pre>
+问题：Roberto 支持的球队在哪个联赛踢球？
+
+生成的 Cypher：
+  MATCH (p:Person {name: "Roberto"})-[:isFanOf]-&gt;(t:SoccerTeam)-[:playsIn]-&gt;(l:SoccerLeague)
+  RETURN l.name
+
+查询结果：SerieA
+最终回答：Roberto 支持的国际米兰在意甲联赛踢球。
+</pre>
+</div>
+
+<p>向量检索擅长「找相似的片段」，图谱擅长「沿着关系多跳推理」并且<strong>可以解释</strong>（查询路径一目了然）。两者经常搭配使用。</p>
+
+<h2 id="route">路由：这个问题该去哪儿查</h2>
+
+<p>
+  现在有了两个数据源：<strong>向量库</strong>（旅游介绍）和<strong>关系数据库</strong>（住宿优惠）。
+  用户的问题该交给谁？让 LLM 当「分诊台」：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="路由链：LLM 根据问题类型选择向量库检索链或 SQL 检索链，结果进入同一个 RAG 提示词">
+  <rect class="bx" x="20" y="76" width="100" height="48" rx="8"/><text class="lbl" x="70" y="105" text-anchor="middle">用户问题</text>
+  <rect class="bx-a" x="160" y="62" width="130" height="76" rx="10"/>
+  <text class="ttl on-a" x="225" y="90" text-anchor="middle">路由器</text>
+  <text class="sm" x="225" y="108" text-anchor="middle">LLM + 结构化输出</text>
+  <text class="sm" x="225" y="124" text-anchor="middle">二选一</text>
+  <path class="ln" d="M122 100 H156" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="350" y="20" width="220" height="56" rx="8"/>
+  <text class="mono on-p" x="460" y="42" text-anchor="middle">tourist_info_store</text>
+  <text class="sm" x="460" y="62" text-anchor="middle">向量库：景点、节日、海滩……</text>
+  <rect class="bx-b" x="350" y="124" width="220" height="56" rx="8"/>
+  <text class="mono on-b" x="460" y="146" text-anchor="middle">uk_booking_db</text>
+  <text class="sm" x="460" y="166" text-anchor="middle">Text-to-SQL：优惠、空房、价格</text>
+  <path class="ln-a" d="M292 86 L346 54" marker-end="url(#ar-a)"/><path class="ln-a" d="M292 114 L346 146" marker-end="url(#ar-a)"/>
+  <text class="sm" x="225" y="50" text-anchor="middle">「有哪些海滩？」↗</text>
+  <text class="sm" x="225" y="158" text-anchor="middle">「有什么优惠？」↘</text>
+  <rect class="bx-g" x="630" y="72" width="110" height="56" rx="8"/>
+  <text class="lbl on-g" x="685" y="96" text-anchor="middle">RAG 提示词</text><text class="sm" x="685" y="114" text-anchor="middle">→ LLM → 答案</text>
+  <path class="ln" d="M572 48 L626 86" marker-end="url(#ar)"/><path class="ln" d="M572 152 L626 114" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 10-5　路由链：这就是第 5 章说的「路由器工作流」</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from typing import Literal
+from pydantic import BaseModel, Field
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+
+# —— 两个「检索器」：输入 {"question": ...}，输出上下文 ——
+tourist_info_retriever_chain = (
+    RunnableLambda(lambda x: x['question'])
+    | uk_with_metadata_collection.as_retriever(search_kwargs={'k': 2}))
+
+uk_accommodation_retriever_chain = sql_query_gen_and_exec_chain    # 上一节的 Text-to-SQL 链
+
+# —— 路由器：用 Literal 把输出限定为两个合法值之一 ——
+class RouteQuery(BaseModel):
+    """Route a user question to the most relevant datasource."""
+    datasource: Literal["tourist_info_store", "uk_booking_db"] = Field(
+        ..., description="Given a user question, route it either to a tourist info "
+                         "vector store or a UK accommodation booking relational database.")
+
+route_prompt = ChatPromptTemplate.from_messages([
+    ("system", """You are an expert at routing a user question to a tourist info vector store
+or to an UK accommodation booking relational database.
+The vector store contains tourist information about UK destinations.
+Use the vectorstore for general tourist information questions on UK destinations.
+For questions about accommodation availability or booking, use the UK Booking database."""),
+    ("human", "{question}"),
+])
+llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model="gpt-5-nano")
+question_router = route_prompt | llm.with_structured_output(RouteQuery)
+
+retriever_chains = {
+    'tourist_info_store': tourist_info_retriever_chain,
+    'uk_booking_db': uk_accommodation_retriever_chain,
+}
+
+def retriever_chooser(question):
+    selected = question_router.invoke({"question": question})
+    return retriever_chains[selected.datasource]
+
+# —— 完整的 RAG：先选检索器，再走标准流程 ——
+rag_prompt = ChatPromptTemplate.from_template("""
+Given a question and some context, answer the question.
+If you get a structured context, like a tuple, try to infer the meaning of the components:
+typically they refer to accommodation offers, and the number is a percentage (0.2 means 20%).
+If you do not know the answer, just say I do not know.
+
+Context: {context}
+Question: {question}
+""")
+
+def execute_rag_chain(question):
+    chosen_retriever = retriever_chooser(question)
+    full_rag_chain = (
+        {"context": {"question": RunnablePassthrough()} | chosen_retriever,
+         "question": RunnablePassthrough()}
+        | rag_prompt | llm | StrOutputParser())
+    return full_rag_chain.invoke(question)
+
+print(execute_rag_chain("Give me some offers for Cardiff, including the accommodation name"))
+print(execute_rag_chain("Tell me about events or festivals in the UK town of Newquay"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { z } from "zod";
+
+// —— 两个「检索器」：输入问题，输出上下文字符串 ——
+const touristInfoRetriever = async (question: string) =&gt;
+  formatDocs(await ukWithMetadataCollection.asRetriever({ k: 2 }).invoke(question));
+
+const ukAccommodationRetriever = sqlRetriever;          // 上一节的 Text-to-SQL 函数
+
+// —— 路由器：用 enum 把输出限定为两个合法值之一 ——
+const RouteQuery = z.object({
+  datasource: z.enum(["tourist_info_store", "uk_booking_db"]).describe(
+    "Given a user question, route it either to a tourist info vector store " +
+    "or a UK accommodation booking relational database."),
+}).describe("Route a user question to the most relevant datasource.");
+
+const routePrompt = ChatPromptTemplate.fromMessages([
+  ["system", `You are an expert at routing a user question to a tourist info vector store
+or to an UK accommodation booking relational database.
+The vector store contains tourist information about UK destinations.
+Use the vectorstore for general tourist information questions on UK destinations.
+For questions about accommodation availability or booking, use the UK Booking database.`],
+  ["human", "{question}"],
+]);
+const questionRouter = routePrompt.pipe(llm.withStructuredOutput(RouteQuery));
+
+const retrievers = {
+  tourist_info_store: touristInfoRetriever,
+  uk_booking_db: ukAccommodationRetriever,
+};
+
+// —— 完整的 RAG：先选检索器，再走标准流程 ——
+const ragPrompt = ChatPromptTemplate.fromTemplate(`
+Given a question and some context, answer the question.
+If you get a structured context, like a tuple, try to infer the meaning of the components:
+typically they refer to accommodation offers, and the number is a percentage (0.2 means 20%).
+If you do not know the answer, just say I do not know.
+
+Context: {context}
+Question: {question}
+`);
+
+async function executeRagChain(question: string): Promise&lt;string&gt; {
+  const { datasource } = await questionRouter.invoke({ question });
+  const context = await retrievers[datasource](question);
+  return ragPrompt.pipe(llm).pipe(new StringOutputParser()).invoke({ context, question });
+}
+
+console.log(await executeRagChain("Give me some offers for Cardiff, including the accommodation name"));
+console.log(await executeRagChain("Tell me about events or festivals in the UK town of Newquay"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// —— 路由器：返回类型是枚举，模型只能二选一 ——
+enum Datasource {
+    @Description("Vector store with general tourist information about UK destinations")
+    TOURIST_INFO_STORE,
+    @Description("Relational database about accommodation availability, offers and booking")
+    UK_BOOKING_DB
+}
+
+interface TravelAssistant {
+    @SystemMessage("""
+            You are an expert at routing a user question to a tourist info vector store
+            or to an UK accommodation booking relational database.
+            Use the vector store for general tourist information questions on UK destinations.
+            For questions about accommodation availability or booking, use the UK Booking database.""")
+    Datasource route(String question);
+
+    @UserMessage("""
+            Given a question and some context, answer the question.
+            If you get a structured context, like a row of values, try to infer the meaning of
+            the components: typically they refer to accommodation offers, and the number is a
+            percentage (0.2 means 20%).
+            If you do not know the answer, just say I do not know.
+
+            Context: {{context}}
+            Question: {{question}}""")
+    String answer(@V("context") String context, @V("question") String question);
+}
+
+// —— 完整的 RAG：先选检索器，再走标准流程 ——
+static String executeRagChain(TravelAssistant ai, SqlGenerator sqlGen, String question) throws SQLException {
+    String context = switch (ai.route(question)) {
+        case TOURIST_INFO_STORE -&gt; retrieve(question, 2);              // 向量库
+        case UK_BOOKING_DB      -&gt; sqlRetriever(sqlGen, question);     // Text-to-SQL
+    };
+    return ai.answer(context, question);
+}
+
+// 提示：LangChain4j 也内置了 LanguageModelQueryRouter，可以把多个 ContentRetriever
+// 交给它自动路由，配合 DefaultRetrievalAugmentor 挂到 AI Service 上。
+</pre>
+</div>
+</div>
+
+<div class="box key">
+  <div class="t">&#128273; 用类型把模型的输出「框住」</div>
+  <p>
+    路由器靠的是 <code>Literal[...]</code>（Python）、<code>z.enum([...])</code>（TypeScript）、<code>enum</code>（Java）。
+    模型不是在自由发挥，而是<strong>只能从你列出的选项里挑一个</strong> —— 后面的代码可以放心地拿它去查字典或做 <code>switch</code>。
+    凡是需要 LLM 做「选择题」的地方，都应该这样约束它。
+  </p>
+</div>
+
+<h2 id="post">检索后处理</h2>
+
+<p>检索回来的东西不一定都该交给模型。无关的块不仅浪费 token，还会干扰回答。后处理就是在「检索」和「生成」之间加一道筛子：</p>
+
+<div class="tw">
+<table>
+  <tr><th>方法</th><th>做法</th><th>LangChain 里怎么用</th></tr>
+  <tr><td>相似度阈值</td><td>相似度不够高的块直接丢弃</td><td><code>as_retriever(search_type="similarity_score_threshold", search_kwargs={"score_threshold": 0.6})</code></td></tr>
+  <tr><td>关键词过滤</td><td>必须包含 / 不得包含某些词</td><td>没有现成类，自己写一个列表推导式</td></tr>
+  <tr><td>时间加权</td><td>越新（或最近被访问）的块得分越高</td><td><code>TimeWeightedVectorStoreRetriever</code></td></tr>
+  <tr><td>重排（Rerank）</td><td>用专门的重排模型对候选块重新打分</td><td>各种 reranker 集成</td></tr>
+  <tr><td><strong>RAG Fusion</strong></td><td>多路检索结果按排名融合</td><td>自己实现，见下</td></tr>
+</table>
+</div>
+
+<h3>RAG Fusion：倒数排名融合</h3>
+
+<p>
+  第 9 章的多查询把几路检索结果简单地合并去重。但哪些该排在前面？
+  <strong>倒数排名融合</strong>（Reciprocal Rank Fusion，RRF）的想法很朴素：
+  <em>一个文档如果在多路检索里都排名靠前，它就更可能真的相关</em>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="倒数排名融合：三路检索结果各自有排名，按公式累加得分后重新排序">
+  <text class="sm" x="80" y="22" text-anchor="middle">查询 1 的结果</text>
+  <rect class="bx-g" x="30" y="32" width="100" height="30" rx="5"/><text class="sm on-g" x="80" y="52" text-anchor="middle">① 文档 A</text>
+  <rect class="bx-b" x="30" y="68" width="100" height="30" rx="5"/><text class="sm on-b" x="80" y="88" text-anchor="middle">② 文档 B</text>
+  <rect class="bx" x="30" y="104" width="100" height="30" rx="5"/><text class="sm" x="80" y="124" text-anchor="middle">③ 文档 C</text>
+
+  <text class="sm" x="210" y="22" text-anchor="middle">查询 2 的结果</text>
+  <rect class="bx-b" x="160" y="32" width="100" height="30" rx="5"/><text class="sm on-b" x="210" y="52" text-anchor="middle">① 文档 B</text>
+  <rect class="bx-g" x="160" y="68" width="100" height="30" rx="5"/><text class="sm on-g" x="210" y="88" text-anchor="middle">② 文档 A</text>
+  <rect class="bx" x="160" y="104" width="100" height="30" rx="5"/><text class="sm" x="210" y="124" text-anchor="middle">③ 文档 D</text>
+
+  <text class="sm" x="340" y="22" text-anchor="middle">查询 3 的结果</text>
+  <rect class="bx-b" x="290" y="32" width="100" height="30" rx="5"/><text class="sm on-b" x="340" y="52" text-anchor="middle">① 文档 B</text>
+  <rect class="bx" x="290" y="68" width="100" height="30" rx="5"/><text class="sm" x="340" y="88" text-anchor="middle">② 文档 E</text>
+  <rect class="bx-g" x="290" y="104" width="100" height="30" rx="5"/><text class="sm on-g" x="340" y="124" text-anchor="middle">③ 文档 A</text>
+
+  <rect class="bx-a" x="30" y="160" width="360" height="110" rx="10"/>
+  <text class="ttl on-a" x="210" y="184" text-anchor="middle">每出现一次，加 1 / (k + 排名)　　k 通常取 60</text>
+  <text class="mono" x="46" y="210">B: 1/62 + 1/61 + 1/61 = 0.0489</text>
+  <text class="mono" x="46" y="230">A: 1/61 + 1/62 + 1/63 = 0.0484</text>
+  <text class="mono" x="46" y="250">C、D、E: 各出现一次 ≈ 0.016</text>
+
+  <path class="ln-a" d="M392 215 H446" marker-end="url(#ar-a)"/>
+  <text class="ttl" x="590" y="44" text-anchor="middle">融合后的排名</text>
+  <rect class="bx-b" x="450" y="60" width="280" height="34" rx="6"/><text class="lbl on-b" x="590" y="82" text-anchor="middle">① 文档 B　　三路都靠前</text>
+  <rect class="bx-g" x="450" y="100" width="280" height="34" rx="6"/><text class="lbl on-g" x="590" y="122" text-anchor="middle">② 文档 A　　三路都出现</text>
+  <rect class="bx" x="450" y="140" width="280" height="34" rx="6"/><text class="lbl" x="590" y="162" text-anchor="middle">③ 文档 E</text>
+  <rect class="bx-d" x="450" y="180" width="280" height="34" rx="6"/><text class="sm" x="590" y="201" text-anchor="middle">文档 C、D（只取前 3，被截掉）</text>
+  <text class="sm" x="590" y="244" text-anchor="middle">只看排名，不看原始分数 ——</text>
+  <text class="sm" x="590" y="262" text-anchor="middle">所以不同检索方式的结果也能融合</text>
+</svg>
+<figcaption>图 10-6　RRF：在多份榜单里都名列前茅的，才是真的好</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+def reciprocal_rank_fusion(results_groups: list[list], k=60):
+    """融合多组有序的检索结果。同一个文档在各组里的得分累加。"""
+    fused_scores, doc_by_key = {}, {}
+
+    for results_group in results_groups:
+        for rank, doc in enumerate(results_group):
+            key = doc.page_content                       # 用内容识别「同一个文档」
+            doc_by_key[key] = doc
+            fused_scores[key] = fused_scores.get(key, 0) + 1 / (rank + 1 + k)
+
+    reranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+    return [(doc_by_key[key], score) for key, score in reranked]
+
+retriever = uk_with_metadata_collection.as_retriever(search_kwargs={'k': 3})
+
+def top_three_results(reranked):
+    return [doc for doc, score in reranked[:3]]
+
+# 多查询 → 每条查询各自检索（.map()）→ RRF 融合 → 取前三
+rag_fusion_retrieval_chain = (
+    multi_query_gen_chain            # 第 9 章的多查询生成链
+    | retriever.map()
+    | reciprocal_rank_fusion
+    | top_three_results)
+
+rag_chain = (
+    {"context": {"question": RunnablePassthrough()} | rag_fusion_retrieval_chain,
+     "question": RunnablePassthrough()}
+    | rag_prompt | llm | StrOutputParser())
+
+print(rag_chain.invoke("Can you give me some tips for a trip to Brighton?"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+/** 融合多组有序的检索结果。同一个文档在各组里的得分累加。 */
+function reciprocalRankFusion(resultsGroups: Document[][], k = 60): [Document, number][] {
+  const fusedScores = new Map&lt;string, number&gt;();
+  const docByKey = new Map&lt;string, Document&gt;();
+
+  for (const group of resultsGroups) {
+    group.forEach((doc, rank) =&gt; {
+      const key = doc.pageContent;                      // 用内容识别「同一个文档」
+      docByKey.set(key, doc);
+      fusedScores.set(key, (fusedScores.get(key) ?? 0) + 1 / (rank + 1 + k));
+    });
+  }
+  return [...fusedScores.entries()]
+    .sort((a, b) =&gt; b[1] - a[1])
+    .map(([key, score]) =&gt; [docByKey.get(key)!, score]);
+}
+
+const retriever = ukWithMetadataCollection.asRetriever({ k: 3 });
+
+// 多查询 → 每条查询各自检索 → RRF 融合 → 取前三
+const ragFusionRetrievalChain = RunnableLambda.from(async (question: string) =&gt; {
+  const queries = await multiQueryGenChain.invoke({ question });     // 第 9 章的多查询生成链
+  const groups = await Promise.all(queries.map((q) =&gt; retriever.invoke(q)));
+  return reciprocalRankFusion(groups).slice(0, 3).map(([doc]) =&gt; doc);
+});
+
+const ragChain = makeRagChain(ragFusionRetrievalChain);              // 第 9 章的通用脚手架
+console.log(await ragChain.invoke("Can you give me some tips for a trip to Brighton?"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+/** 融合多组有序的检索结果。同一个文档在各组里的得分累加。 */
+static List&lt;String&gt; reciprocalRankFusion(List&lt;List&lt;String&gt;&gt; resultsGroups, int k, int topN) {
+    Map&lt;String, Double&gt; fusedScores = new HashMap&lt;&gt;();
+
+    for (List&lt;String&gt; group : resultsGroups) {
+        for (int rank = 0; rank &lt; group.size(); rank++) {
+            fusedScores.merge(group.get(rank), 1.0 / (rank + 1 + k), Double::sum);
+        }
+    }
+    return fusedScores.entrySet().stream()
+            .sorted(Map.Entry.&lt;String, Double&gt;comparingByValue().reversed())
+            .limit(topN)
+            .map(Map.Entry::getKey)
+            .toList();
+}
+
+// 多查询 → 每条查询各自检索 → RRF 融合 → 取前三
+String question = "Can you give me some tips for a trip to Brighton?";
+
+List&lt;List&lt;String&gt;&gt; groups = ai.multipleQueries(question).parallelStream()   // 第 9 章
+        .map(q -&gt; searchSegments(q, 3))
+        .toList();
+
+String context = String.join("\n\n", reciprocalRankFusion(groups, 60, 3));
+System.out.println(ai.answer(context, question));
+
+// 提示：LangChain4j 的 DefaultContentAggregator 内置的正是 RRF ——
+// 只要给 RetrievalAugmentor 配上 ExpandingQueryTransformer，多路结果就会自动按 RRF 融合。
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 与仓库 Notebook 的一处差别</div>
+  <p>
+    仓库里的 <code>reciprocal_rank_fusion</code> 用 <code>(组号, 组内排名)</code> 作为字典的键，这样每条结果的键都是唯一的，
+    同一个文档在不同组里的得分<strong>不会累加</strong> —— 实际效果只是按组内排名排序。
+    上面的版本改用文档内容作为键，才是 RRF 的本意：跨组累加。读 Notebook 时可以对照着看。
+  </p>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; RRF 最常见的用途：混合检索</div>
+  <p>
+    因为 RRF 只看排名、不看分数，它特别适合融合<strong>不同类型</strong>的检索结果 ——
+    比如向量检索（擅长语义）和关键词检索 BM25（擅长专有名词、型号、代码）。这种「混合检索」在生产系统里非常普遍。
+  </p>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li><strong>自查询</strong>：让 LLM 从问题里提取元数据过滤条件，先精确过滤再语义搜索。前提是入库时带上了元数据。</li>
+  <li><strong>Text-to-SQL</strong>：把表结构给模型 → 生成 SQL → 执行。务必使用只读连接，权限控制放在数据库层面。</li>
+  <li><strong>语义 SQL</strong>（pgvector）把精确条件和语义条件写在一条查询里；<strong>知识图谱 RAG</strong> 擅长多跳关系推理。</li>
+  <li><strong>路由</strong>：用结构化输出（枚举 / Literal）让 LLM 在预设的数据源里选一个。</li>
+  <li><strong>检索后处理</strong>：相似度阈值、关键词过滤、时间加权、重排，以及 RAG Fusion。</li>
+  <li><strong>RRF</strong> 只看排名：<code>得分 = Σ 1 / (k + 排名)</code>，在多路结果里都靠前的文档胜出。</li>
+  <li>至此，第 8 章开头列的六类问题都有了对应的工具。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>问 "Events or festivals in Newquay"，分别用不带过滤和带自查询过滤两种方式检索，对比结果里的 <code>destination</code>。</li>
+    <li>故意问一个库里没有的目的地，看自查询会生成什么过滤条件、检索到什么。然后加上「结果为空就退回普通检索」的兜底逻辑。</li>
+    <li>按 <code>ch10/</code> 下的两个 SQL 脚本建好 <code>UkBooking.db</code>，让 Text-to-SQL 回答一个需要连三张表的问题，并检查生成的 SQL 是否正确。</li>
+    <li>给路由器加第三个选项 <code>"none"</code>：与旅游完全无关的问题直接礼貌拒绝，不去查任何数据源。</li>
+    <li>手算图 10-6 的例子，验证 A 和 B 的得分；再把 <code>k</code> 从 60 改成 1，排名有变化吗？想想 <code>k</code> 的作用是什么。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

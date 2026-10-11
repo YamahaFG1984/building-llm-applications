@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 3 章 · 用 LangChain 做文本摘要 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="3">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 3 章</span>
+<h1>用 LangChain 做文本摘要</h1>
+<p class="lede">
+  「帮我总结一下」是 LLM 最拿手的活。但如果要总结的是一整本《白鲸》，或者是散落在维基百科、Word、PDF 里的好几份资料呢？
+  一次塞不进去，就得<strong>拆开来各个击破，再合起来</strong>。这一章学两种经典拆法：Map-Reduce 和 Refine。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解上下文窗口为什么会成为瓶颈</li>
+    <li>用 Map-Reduce 总结一份超长文档</li>
+    <li>用文档加载器读取维基百科、Word、PDF、文本文件</li>
+    <li>用 Refine 逐步精炼地总结多份文档</li>
+    <li>拿到一个摘要任务时，知道该选哪种策略</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="problem">问题：书太厚，窗口太小</h2>
+
+<p>
+  模型一次能读的文字有上限，叫<strong>上下文窗口</strong>。一本《白鲸》大约有 30 万 token，
+  即使某个模型的窗口装得下，把整本书一次塞进去也<strong>又贵又慢</strong>，而且内容太多时模型容易「顾头不顾尾」，遗漏中间部分。
+</p>
+<p>解决思路和人读厚书做笔记一模一样：<strong>一章一章读，每章写个小结，最后把小结汇总成全书摘要</strong>。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 320" role="img" aria-label="Map-Reduce 摘要：切分、对每块并行摘要、把所有小摘要合并成最终摘要">
+  <rect class="bx" x="20" y="120" width="86" height="80" rx="8"/>
+  <text class="ttl" x="63" y="154" text-anchor="middle">长文档</text>
+  <text class="sm" x="63" y="174" text-anchor="middle">《白鲸》</text>
+
+  <path class="ln" d="M108 160 H138" marker-end="url(#ar)"/>
+  <text class="ttl on-b" x="185" y="30" text-anchor="middle">① Split 切分</text>
+  <rect class="bx-b" x="142" y="50" width="86" height="40" rx="6"/><text class="sm on-b" x="185" y="75" text-anchor="middle">块 1</text>
+  <rect class="bx-b" x="142" y="106" width="86" height="40" rx="6"/><text class="sm on-b" x="185" y="131" text-anchor="middle">块 2</text>
+  <rect class="bx-b" x="142" y="162" width="86" height="40" rx="6"/><text class="sm on-b" x="185" y="187" text-anchor="middle">块 3</text>
+  <text class="sm" x="185" y="224" text-anchor="middle">⋮</text>
+  <rect class="bx-b" x="142" y="238" width="86" height="40" rx="6"/><text class="sm on-b" x="185" y="263" text-anchor="middle">块 N</text>
+
+  <text class="ttl on-a" x="335" y="30" text-anchor="middle">② Map 逐块摘要（可并行）</text>
+  <rect class="bx-a" x="290" y="50" width="90" height="40" rx="6"/><text class="sm on-a" x="335" y="75" text-anchor="middle">LLM</text>
+  <rect class="bx-a" x="290" y="106" width="90" height="40" rx="6"/><text class="sm on-a" x="335" y="131" text-anchor="middle">LLM</text>
+  <rect class="bx-a" x="290" y="162" width="90" height="40" rx="6"/><text class="sm on-a" x="335" y="187" text-anchor="middle">LLM</text>
+  <rect class="bx-a" x="290" y="238" width="90" height="40" rx="6"/><text class="sm on-a" x="335" y="263" text-anchor="middle">LLM</text>
+  <path class="ln" d="M230 70 H286" marker-end="url(#ar)"/><path class="ln" d="M230 126 H286" marker-end="url(#ar)"/>
+  <path class="ln" d="M230 182 H286" marker-end="url(#ar)"/><path class="ln" d="M230 258 H286" marker-end="url(#ar)"/>
+
+  <rect class="bx-g" x="436" y="50" width="86" height="40" rx="6"/><text class="sm on-g" x="479" y="75" text-anchor="middle">摘要 1</text>
+  <rect class="bx-g" x="436" y="106" width="86" height="40" rx="6"/><text class="sm on-g" x="479" y="131" text-anchor="middle">摘要 2</text>
+  <rect class="bx-g" x="436" y="162" width="86" height="40" rx="6"/><text class="sm on-g" x="479" y="187" text-anchor="middle">摘要 3</text>
+  <rect class="bx-g" x="436" y="238" width="86" height="40" rx="6"/><text class="sm on-g" x="479" y="263" text-anchor="middle">摘要 N</text>
+  <path class="ln" d="M382 70 H432" marker-end="url(#ar)"/><path class="ln" d="M382 126 H432" marker-end="url(#ar)"/>
+  <path class="ln" d="M382 182 H432" marker-end="url(#ar)"/><path class="ln" d="M382 258 H432" marker-end="url(#ar)"/>
+
+  <text class="ttl on-p" x="610" y="30" text-anchor="middle">③ Reduce 合并</text>
+  <path class="ln" d="M524 70 H548 V160 H566" marker-end="url(#ar)"/>
+  <path class="ln" d="M524 126 H548"/><path class="ln" d="M524 182 H548 V160"/><path class="ln" d="M524 258 H548 V160"/>
+  <rect class="bx-a" x="570" y="136" width="70" height="48" rx="6"/><text class="sm on-a" x="605" y="165" text-anchor="middle">LLM</text>
+  <path class="ln-p" d="M642 160 H664" marker-end="url(#ar-p)"/>
+  <rect class="bx-p" x="668" y="120" width="76" height="80" rx="8"/>
+  <text class="ttl on-p" x="706" y="154" text-anchor="middle">最终</text>
+  <text class="ttl on-p" x="706" y="174" text-anchor="middle">摘要</text>
+  <text class="sm" x="380" y="308" text-anchor="middle">N 块文本 → N 次「map」调用 + 1 次「reduce」调用</text>
+</svg>
+<figcaption>图 3-1　Map-Reduce 摘要：分头读，各写小结，再汇总</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; 名字的由来</div>
+  <p>
+    <strong>Map</strong>（映射）指「对列表里的每个元素做同一件事」，<strong>Reduce</strong>（归约）指「把一堆结果合并成一个」。
+    这个说法来自大数据处理领域，和你在 JavaScript、Java、Python 里用过的 <code>map()</code> / <code>reduce()</code> 是同一个意思。
+  </p>
+</div>
+
+<h2 id="mapreduce">用 Map-Reduce 总结一本书</h2>
+
+<p>把整个流程拆成三条小链，最后再接成一条大链。</p>
+
+<h3>准备：读入文本，创建模型</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_openai import ChatOpenAI
+from langchain_text_splitters import TokenTextSplitter
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnableLambda, RunnableParallel
+
+with open("./Moby-Dick.txt", 'r', encoding='utf-8') as f:
+    moby_dick_book = f.read()
+
+llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-5-nano")
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { readFile } from "node:fs/promises";
+import { ChatOpenAI } from "@langchain/openai";
+import { TokenTextSplitter } from "@langchain/textsplitters";
+import { PromptTemplate } from "@langchain/core/prompts";
+import { StringOutputParser } from "@langchain/core/output_parsers";
+import { RunnableLambda } from "@langchain/core/runnables";
+
+const mobyDickBook = await readFile("./Moby-Dick.txt", "utf-8");
+
+const llm = new ChatOpenAI({ model: "gpt-5-nano" });
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.splitter.DocumentSplitters;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.input.PromptTemplate;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
+import java.nio.file.*;
+import java.util.*;
+
+String mobyDickBook = Files.readString(Path.of("./Moby-Dick.txt"));
+
+var llm = OpenAiChatModel.builder()
+        .apiKey(System.getenv("OPENAI_API_KEY")).modelName("gpt-5-nano").build();
+</pre>
+</div>
+</div>
+
+<h3>① Split：按 token 数切块</h3>
+
+<p>
+  每块 3000 token，相邻两块<strong>重叠</strong> 100 token。重叠是为了避免一句话正好被拦腰切断、两边都看不懂。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 120" role="img" aria-label="相邻文本块之间有重叠区域">
+  <rect class="bx-b" x="40" y="30" width="260" height="36" rx="6"/><text class="sm on-b" x="150" y="53" text-anchor="middle">块 1（3000 token）</text>
+  <rect class="bx-g" x="270" y="48" width="260" height="36" rx="6"/><text class="sm on-g" x="410" y="71" text-anchor="middle">块 2（3000 token）</text>
+  <rect class="bx-p" x="500" y="30" width="220" height="36" rx="6"/><text class="sm on-p" x="620" y="53" text-anchor="middle">块 3 …</text>
+  <path class="ln-r" d="M285 22 V92"/><path class="ln-r" d="M515 22 V92"/>
+  <text class="sm on-r" x="285" y="108" text-anchor="middle">重叠 100 token</text>
+  <text class="sm on-r" x="515" y="108" text-anchor="middle">重叠 100 token</text>
+</svg>
+<figcaption>图 3-2　chunk_size 决定每块多大，chunk_overlap 决定相邻块共享多少</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+# 输入：整本书的字符串；输出：[{'chunk': '...'}, {'chunk': '...'}, ...]
+text_chunks_chain = (
+    RunnableLambda(lambda x:
+        [
+            {'chunk': text_chunk}
+            for text_chunk in
+               TokenTextSplitter(chunk_size=3000, chunk_overlap=100).split_text(x)
+        ]
+    )
+)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// 输入：整本书的字符串；输出：[{ chunk: "..." }, { chunk: "..." }, ...]
+const splitter = new TokenTextSplitter({ chunkSize: 3000, chunkOverlap: 100 });
+
+const textChunksChain = RunnableLambda.from(async (text: string) =&gt;
+  (await splitter.splitText(text)).map((chunk) =&gt; ({ chunk })));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 按 token 数切分：每块 3000，重叠 100
+var splitter = DocumentSplitters.recursive(
+        3000, 100, new OpenAiTokenCountEstimator("gpt-4o-mini"));
+
+List&lt;TextSegment&gt; chunks = splitter.split(Document.from(mobyDickBook));
+</pre>
+</div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; RunnableLambda 是什么</div>
+  <p>
+    它把一个普通函数包装成 LangChain 的积木，这样自己写的任意逻辑也能用 <code>|</code> 接进链里。
+    后面你会大量看到它，作用通常是「调整一下数据的形状，好喂给下一步」。
+  </p>
+</div>
+
+<h3>② Map：总结每一块</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+summarize_chunk_prompt = PromptTemplate.from_template("""
+Write a concise summary of the following text, and include the main details.
+Text: {chunk}
+""")
+
+summarize_chunk_chain = summarize_chunk_prompt | llm
+
+# 输入：{'chunk': '...'}；输出：{'summary': '...'}
+summarize_map_chain = RunnableParallel(
+    {'summary': summarize_chunk_chain | StrOutputParser()}
+)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const summarizeChunkPrompt = PromptTemplate.fromTemplate(`
+Write a concise summary of the following text, and include the main details.
+Text: {chunk}
+`);
+
+// 输入：{ chunk: "..." }；输出：{ summary: "..." }
+const summarizeMapChain = RunnableLambda.from(async (input: { chunk: string }) =&gt; ({
+  summary: await summarizeChunkPrompt
+    .pipe(llm)
+    .pipe(new StringOutputParser())
+    .invoke(input),
+}));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+PromptTemplate summarizeChunkPrompt = PromptTemplate.from("""
+        Write a concise summary of the following text, and include the main details.
+        Text: {{chunk}}
+        """);
+
+// parallelStream() 让多个块同时请求模型 —— 这就是 map 阶段的「并行」
+List&lt;String&gt; summaries = chunks.parallelStream()
+        .map(chunk -&gt; llm.chat(
+                summarizeChunkPrompt.apply(Map.of("chunk", chunk.text())).text()))
+        .toList();
+</pre>
+</div>
+</div>
+
+<p>
+  <code>StrOutputParser</code>（TS 里叫 <code>StringOutputParser</code>）做的事很简单：从模型返回的消息对象里取出 <code>.content</code> 字符串。
+  有了它，链的输出就是干净的文本，方便交给下一步。
+</p>
+
+<h3>③ Reduce：把小摘要合成大摘要</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+summarize_summaries_prompt = PromptTemplate.from_template("""
+Write a concise summary of the following text, which joins several summaries,
+and include the main details.
+Text: {summaries}
+""")
+
+# 输入：[{'summary': '...'}, ...]；输出：最终摘要字符串
+summarize_reduce_chain = (
+    RunnableLambda(lambda x:
+        {'summaries': '\n'.join([i['summary'] for i in x])})
+    | summarize_summaries_prompt
+    | llm
+    | StrOutputParser()
+)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const summarizeSummariesPrompt = PromptTemplate.fromTemplate(`
+Write a concise summary of the following text, which joins several summaries,
+and include the main details.
+Text: {summaries}
+`);
+
+// 输入：[{ summary: "..." }, ...]；输出：最终摘要字符串
+const summarizeReduceChain = RunnableLambda
+  .from((items: { summary: string }[]) =&gt; ({
+    summaries: items.map((i) =&gt; i.summary).join("\n"),
+  }))
+  .pipe(summarizeSummariesPrompt)
+  .pipe(llm)
+  .pipe(new StringOutputParser());
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+PromptTemplate summarizeSummariesPrompt = PromptTemplate.from("""
+        Write a concise summary of the following text, which joins several summaries,
+        and include the main details.
+        Text: {{summaries}}
+        """);
+
+String finalSummary = llm.chat(summarizeSummariesPrompt
+        .apply(Map.of("summaries", String.join("\n", summaries))).text());
+
+System.out.println(finalSummary);
+</pre>
+</div>
+</div>
+
+<h3>接起来，运行</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+map_reduce_chain = (
+   text_chunks_chain
+   | summarize_map_chain.map()      # .map() = 对列表里的每个元素并行执行这条链
+   | summarize_reduce_chain
+)
+
+summary = map_reduce_chain.invoke(moby_dick_book)
+print(summary)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const mapReduceChain = textChunksChain
+  .pipe(summarizeMapChain.map())    // .map() = 对数组里的每个元素并行执行这条链
+  .pipe(summarizeReduceChain);
+
+const summary = await mapReduceChain.invoke(mobyDickBook);
+console.log(summary);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 把上面三段包成一个方法，就是 Java 版的「map-reduce 链」
+static String mapReduceSummarize(ChatModel llm, String text) {
+    var chunks = DocumentSplitters
+            .recursive(3000, 100, new OpenAiTokenCountEstimator("gpt-4o-mini"))
+            .split(Document.from(text));
+
+    var summaries = chunks.parallelStream()                                      // map
+            .map(c -&gt; llm.chat(SUMMARIZE_CHUNK.apply(Map.of("chunk", c.text())).text()))
+            .toList();
+
+    return llm.chat(SUMMARIZE_SUMMARIES                                          // reduce
+            .apply(Map.of("summaries", String.join("\n", summaries))).text());
+}
+</pre>
+</div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 注意费用</div>
+  <p>
+    整本《白鲸》会切出上百块，也就是上百次模型调用。仓库里的 <code>Moby-Dick.txt</code> 已经是<strong>缩短过的版本</strong>，
+    完整版叫 <code>Moby-Dick_ORIGINAL_EXPENSIVE.txt</code> —— 文件名已经说明了一切。练习时先用短的。
+  </p>
+</div>
+
+<h2 id="loaders">总结多份来源不同的文档</h2>
+
+<p>
+  现实中更常见的需求是：关于同一个主题（书里的例子是意大利古城<strong>帕埃斯图姆</strong> Paestum），
+  手头有一篇维基百科、一份 Word、一份 PDF、一个文本文件，要综合出一份摘要。
+</p>
+
+<h3>文档加载器：把各种格式统一成 Document</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="不同来源经过各自的加载器后都变成统一的 Document 对象">
+  <rect class="bx" x="20" y="16" width="130" height="36" rx="6"/><text class="lbl" x="85" y="39" text-anchor="middle">维基百科</text>
+  <rect class="bx" x="20" y="60" width="130" height="36" rx="6"/><text class="lbl" x="85" y="83" text-anchor="middle">Word .docx</text>
+  <rect class="bx" x="20" y="104" width="130" height="36" rx="6"/><text class="lbl" x="85" y="127" text-anchor="middle">PDF</text>
+  <rect class="bx" x="20" y="148" width="130" height="36" rx="6"/><text class="lbl" x="85" y="171" text-anchor="middle">纯文本 .txt</text>
+
+  <rect class="bx-b" x="210" y="16" width="170" height="36" rx="6"/><text class="mono on-b" x="295" y="39" text-anchor="middle">WikipediaLoader</text>
+  <rect class="bx-b" x="210" y="60" width="170" height="36" rx="6"/><text class="mono on-b" x="295" y="83" text-anchor="middle">Docx2txtLoader</text>
+  <rect class="bx-b" x="210" y="104" width="170" height="36" rx="6"/><text class="mono on-b" x="295" y="127" text-anchor="middle">PyPDFLoader</text>
+  <rect class="bx-b" x="210" y="148" width="170" height="36" rx="6"/><text class="mono on-b" x="295" y="171" text-anchor="middle">TextLoader</text>
+  <path class="ln" d="M152 34 H206" marker-end="url(#ar)"/><path class="ln" d="M152 78 H206" marker-end="url(#ar)"/>
+  <path class="ln" d="M152 122 H206" marker-end="url(#ar)"/><path class="ln" d="M152 166 H206" marker-end="url(#ar)"/>
+
+  <path class="ln" d="M382 34 H430 V100 H470" marker-end="url(#ar)"/>
+  <path class="ln" d="M382 78 H430"/><path class="ln" d="M382 122 H430 V100"/><path class="ln" d="M382 166 H430 V100"/>
+
+  <rect class="bx-g" x="474" y="34" width="266" height="132" rx="10"/>
+  <text class="ttl on-g" x="607" y="58" text-anchor="middle">Document</text>
+  <rect class="bx" x="490" y="70" width="234" height="38" rx="6"/>
+  <text class="mono" x="500" y="86">page_content</text><text class="sm" x="500" y="101">正文文本</text>
+  <rect class="bx" x="490" y="116" width="234" height="38" rx="6"/>
+  <text class="mono" x="500" y="132">metadata</text><text class="sm" x="500" y="147">{ source: "...", page: 3, ... }</text>
+</svg>
+<figcaption>图 3-3　不管来源是什么，加载之后都是 Document —— 下游代码不用关心格式</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_community.document_loaders import (
+    WikipediaLoader, Docx2txtLoader, PyPDFLoader, TextLoader)
+
+wikipedia_docs = WikipediaLoader(query="Paestum", load_max_docs=2).load()
+word_docs = Docx2txtLoader("Paestum/Paestum-Britannica.docx").load()
+pdf_docs  = PyPDFLoader("Paestum/PaestumRevisited.pdf").load()
+txt_docs  = TextLoader("Paestum/Paestum-Encyclopedia.txt").load()
+
+all_docs = wikipedia_docs + word_docs + pdf_docs + txt_docs
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// npm install mammoth pdf-parse   （docx 和 pdf 加载器的底层依赖）
+import { DocxLoader } from "@langchain/community/document_loaders/fs/docx";
+import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
+import { TextLoader } from "@langchain/classic/document_loaders/fs/text";
+import { WikipediaQueryRun } from "@langchain/community/tools/wikipedia_query_run";
+import { Document } from "@langchain/core/documents";
+
+// LangChain.js 没有 WikipediaLoader，用维基百科查询工具取正文，再手动包成 Document
+const wiki = new WikipediaQueryRun({ topKResults: 2, maxDocContentLength: 20000 });
+const wikipediaDocs = [new Document({
+  pageContent: await wiki.invoke("Paestum"),
+  metadata: { source: "wikipedia:Paestum" },
+})];
+
+const wordDocs = await new DocxLoader("Paestum/Paestum-Britannica.docx").load();
+const pdfDocs  = await new PDFLoader("Paestum/PaestumRevisited.pdf").load();
+const txtDocs  = await new TextLoader("Paestum/Paestum-Encyclopedia.txt").load();
+
+const allDocs = [...wikipediaDocs, ...wordDocs, ...pdfDocs, ...txtDocs];
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 依赖：langchain4j-document-parser-apache-tika（一个解析器通吃 docx / pdf / txt）
+//       langchain4j-document-transformer-jsoup（把 HTML 转成纯文本）
+import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
+import dev.langchain4j.data.document.loader.UrlDocumentLoader;
+import dev.langchain4j.data.document.parser.TextDocumentParser;
+import dev.langchain4j.data.document.parser.apache.tika.ApacheTikaDocumentParser;
+import dev.langchain4j.data.document.transformer.jsoup.HtmlToTextDocumentTransformer;
+
+var tika = new ApacheTikaDocumentParser();
+
+Document wikipediaDoc = new HtmlToTextDocumentTransformer().transform(
+        UrlDocumentLoader.load("https://en.wikipedia.org/wiki/Paestum", new TextDocumentParser()));
+Document wordDoc = FileSystemDocumentLoader.loadDocument(Path.of("Paestum/Paestum-Britannica.docx"), tika);
+Document pdfDoc  = FileSystemDocumentLoader.loadDocument(Path.of("Paestum/PaestumRevisited.pdf"), tika);
+Document txtDoc  = FileSystemDocumentLoader.loadDocument(Path.of("Paestum/Paestum-Encyclopedia.txt"), tika);
+
+List&lt;Document&gt; allDocs = List.of(wikipediaDoc, wordDoc, pdfDoc, txtDoc);
+</pre>
+</div>
+</div>
+
+<h2 id="refine">Refine：边读边改的滚动摘要</h2>
+
+<p>
+  有了文档列表，当然可以再用一次 Map-Reduce。但它有个弱点：每份文档是<strong>独立</strong>总结的，
+  总结第三份的时候，模型并不知道前两份已经说了什么，于是容易重复，也可能在最后合并时把某份文档的要点挤掉。
+</p>
+<p>
+  <strong>Refine</strong>（精炼）换了个思路：维护一份「当前摘要」，每读一份新文档，就让模型<strong>在现有摘要的基础上修订</strong>。
+  就像你写读书笔记时，读完一章就回头补充、修改前面的笔记。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="Refine 摘要：当前摘要与下一份文档一起交给 LLM，得到更新后的摘要，依次进行">
+  <rect class="bx" x="20" y="22" width="90" height="40" rx="6"/><text class="lbl" x="65" y="47" text-anchor="middle">文档 1</text>
+  <rect class="bx" x="230" y="22" width="90" height="40" rx="6"/><text class="lbl" x="275" y="47" text-anchor="middle">文档 2</text>
+  <rect class="bx" x="440" y="22" width="90" height="40" rx="6"/><text class="lbl" x="485" y="47" text-anchor="middle">文档 3</text>
+
+  <rect class="bx-d" x="20" y="150" width="90" height="40" rx="6"/><text class="sm" x="65" y="175" text-anchor="middle">（空摘要）</text>
+
+  <rect class="bx-a" x="130" y="88" width="76" height="44" rx="8"/><text class="sm on-a" x="168" y="115" text-anchor="middle">LLM</text>
+  <rect class="bx-a" x="340" y="88" width="76" height="44" rx="8"/><text class="sm on-a" x="378" y="115" text-anchor="middle">LLM</text>
+  <rect class="bx-a" x="550" y="88" width="76" height="44" rx="8"/><text class="sm on-a" x="588" y="115" text-anchor="middle">LLM</text>
+
+  <rect class="bx-g" x="230" y="150" width="90" height="40" rx="6"/><text class="sm on-g" x="275" y="175" text-anchor="middle">摘要 v1</text>
+  <rect class="bx-g" x="440" y="150" width="90" height="40" rx="6"/><text class="sm on-g" x="485" y="175" text-anchor="middle">摘要 v2</text>
+  <rect class="bx-p" x="650" y="150" width="90" height="40" rx="6"/><text class="ttl on-p" x="695" y="175" text-anchor="middle">最终摘要</text>
+
+  <path class="ln" d="M65 64 V110 H126" marker-end="url(#ar)"/>
+  <path class="ln-d" d="M112 170 H168 V136" marker-end="url(#ar)"/>
+  <path class="ln-g" d="M208 110 H275 V146" marker-end="url(#ar-g)"/>
+
+  <path class="ln" d="M275 64 V80 H330 V110 H336" marker-end="url(#ar)"/>
+  <path class="ln-g" d="M322 170 H378 V136" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M418 110 H485 V146" marker-end="url(#ar-g)"/>
+
+  <path class="ln" d="M485 64 V80 H540 V110 H546" marker-end="url(#ar)"/>
+  <path class="ln-g" d="M532 170 H588 V136" marker-end="url(#ar-g)"/>
+  <path class="ln-p" d="M628 110 H695 V146" marker-end="url(#ar-p)"/>
+
+  <text class="sm" x="380" y="218" text-anchor="middle">每一步的输入 = 上一步的摘要 + 一份新文档　　必须按顺序，无法并行</text>
+</svg>
+<figcaption>图 3-4　Refine：像滚雪球一样，摘要越滚越完整</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+refine_summary_prompt = PromptTemplate.from_template("""
+You must produce a final summary from the current refined summary
+which has been generated so far and from the content of an additional document.
+This is the current refined summary generated so far: {current_refined_summary}
+This is the content of the additional document: {text}
+Only use the content of the additional document if it is useful,
+otherwise return the current full summary as it is.""")
+
+refine_chain = refine_summary_prompt | llm | StrOutputParser()
+
+def refine_summary(docs):
+    intermediate_steps = []
+    current_refined_summary = ''
+    for doc in docs:
+        intermediate_step = {
+            "current_refined_summary": current_refined_summary,
+            "text": doc.page_content}
+        intermediate_steps.append(intermediate_step)
+
+        current_refined_summary = refine_chain.invoke(intermediate_step)
+
+    return {"final_summary": current_refined_summary,
+            "intermediate_steps": intermediate_steps}
+
+full_summary = refine_summary(all_docs)
+print(full_summary["final_summary"])
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const refineSummaryPrompt = PromptTemplate.fromTemplate(`
+You must produce a final summary from the current refined summary
+which has been generated so far and from the content of an additional document.
+This is the current refined summary generated so far: {current_refined_summary}
+This is the content of the additional document: {text}
+Only use the content of the additional document if it is useful,
+otherwise return the current full summary as it is.`);
+
+const refineChain = refineSummaryPrompt.pipe(llm).pipe(new StringOutputParser());
+
+async function refineSummary(docs: Document[]) {
+  const intermediateSteps: Record&lt;string, string&gt;[] = [];
+  let currentRefinedSummary = "";
+
+  for (const doc of docs) {
+    const step = { current_refined_summary: currentRefinedSummary, text: doc.pageContent };
+    intermediateSteps.push(step);
+    currentRefinedSummary = await refineChain.invoke(step);
+  }
+  return { finalSummary: currentRefinedSummary, intermediateSteps };
+}
+
+const fullSummary = await refineSummary(allDocs);
+console.log(fullSummary.finalSummary);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+PromptTemplate refineSummaryPrompt = PromptTemplate.from("""
+        You must produce a final summary from the current refined summary
+        which has been generated so far and from the content of an additional document.
+        This is the current refined summary generated so far: {{current_refined_summary}}
+        This is the content of the additional document: {{text}}
+        Only use the content of the additional document if it is useful,
+        otherwise return the current full summary as it is.""");
+
+String currentRefinedSummary = "";
+for (Document doc : allDocs) {
+    currentRefinedSummary = llm.chat(refineSummaryPrompt.apply(Map.of(
+            "current_refined_summary", currentRefinedSummary,
+            "text", doc.text())).text());
+}
+System.out.println(currentRefinedSummary);
+</pre>
+</div>
+</div>
+
+<p>
+  注意这里没有用一条大链，而是一个普通的 <code>for</code> 循环。这很正常 ——
+  <strong>链适合「数据一路往下流」的场景；一旦需要循环累积状态，写普通代码反而更清楚</strong>。
+  第 5 章会介绍专门处理循环和状态的工具：LangGraph。
+</p>
+
+<h3>两种策略怎么选</h3>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>Map-Reduce</th><th>Refine</th></tr>
+  <tr><td>执行方式</td><td>各块独立，可以<strong>并行</strong></td><td>必须按顺序<strong>串行</strong></td></tr>
+  <tr><td>速度</td><td>快</td><td>慢（文档越多越慢）</td></tr>
+  <tr><td>token 消耗</td><td>较少</td><td>较多（每一步都要带上当前摘要）</td></tr>
+  <tr><td>上下文连贯性</td><td>块与块之间互不知情，可能重复或遗漏关联</td><td>每步都能看到之前的结论，连贯性好</td></tr>
+  <tr><td>弱点</td><td>合并时可能丢掉某块的要点</td><td>排在前面的文档影响更大</td></tr>
+  <tr><td>适合</td><td>文档很多、追求速度</td><td>希望每份文档的核心都体现在最终摘要里</td></tr>
+</table>
+</div>
+
+<h2 id="flow">摘要策略决策图</h2>
+
+<p>还有第三种最简单的策略叫 <strong>Stuff</strong>（直接塞）：内容不长，就整个放进一条提示词里。完整的选择流程如下：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="摘要策略决策流程图">
+  <rect class="bx" x="290" y="14" width="180" height="40" rx="20"/>
+  <text class="ttl" x="380" y="39" text-anchor="middle">要总结一份或多份文档</text>
+  <path class="ln" d="M380 56 V78" marker-end="url(#ar)"/>
+
+  <path class="bx-b" d="M380 82 L480 122 L380 162 L280 122 Z" style="fill:var(--blue-bg)"/>
+  <text class="lbl on-b" x="380" y="127" text-anchor="middle">是多份文档吗？</text>
+
+  <path class="ln" d="M278 122 H170 V168" marker-end="url(#ar)"/><text class="sm" x="224" y="114" text-anchor="middle">否（单份）</text>
+  <path class="ln" d="M482 122 H590 V168" marker-end="url(#ar)"/><text class="sm" x="536" y="114" text-anchor="middle">是（多份）</text>
+
+  <path class="bx-b" d="M170 172 L260 204 L170 236 L80 204 Z" style="fill:var(--blue-bg)"/>
+  <text class="sm on-b" x="170" y="208" text-anchor="middle">装得进上下文窗口？</text>
+  <path class="bx-b" d="M590 172 L680 204 L590 236 L500 204 Z" style="fill:var(--blue-bg)"/>
+  <text class="sm on-b" x="590" y="208" text-anchor="middle">全部装得进窗口？</text>
+
+  <rect class="bx-g" x="20" y="252" width="110" height="36" rx="8"/><text class="lbl on-g" x="75" y="275" text-anchor="middle">Stuff 直接塞</text>
+  <rect class="bx-a" x="170" y="252" width="150" height="36" rx="8"/><text class="lbl on-a" x="245" y="275" text-anchor="middle">切分 + Map-Reduce</text>
+  <rect class="bx-g" x="440" y="252" width="110" height="36" rx="8"/><text class="lbl on-g" x="495" y="275" text-anchor="middle">Stuff 直接塞</text>
+  <rect class="bx-a" x="590" y="252" width="150" height="36" rx="8"/><text class="lbl on-a" x="665" y="275" text-anchor="middle">Map-Reduce 或 Refine</text>
+
+  <path class="ln-g" d="M110 226 L84 248" marker-end="url(#ar-g)"/><text class="sm" x="80" y="238" text-anchor="end">是</text>
+  <path class="ln-a" d="M218 228 L238 248" marker-end="url(#ar-a)"/><text class="sm" x="244" y="238">否</text>
+  <path class="ln-g" d="M530 226 L504 248" marker-end="url(#ar-g)"/><text class="sm" x="500" y="238" text-anchor="end">是</text>
+  <path class="ln-a" d="M638 228 L658 248" marker-end="url(#ar-a)"/><text class="sm" x="664" y="238">否</text>
+</svg>
+<figcaption>图 3-5　先看文档数量，再看装不装得下</figcaption>
+</figure>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>内容超出上下文窗口（或虽然装得下但太贵）时，需要拆开处理。</li>
+  <li><strong>Map-Reduce</strong>：切块 → 每块独立摘要（可并行）→ 合并。快、省，但块之间互不知情。</li>
+  <li><strong>Refine</strong>：维护一份滚动摘要，每读一份文档修订一次。连贯，但只能串行、更费 token。</li>
+  <li><strong>Stuff</strong>：装得下就直接塞，最简单。</li>
+  <li>文档加载器把各种来源统一成 <code>Document</code>（正文 + 元数据），下游逻辑不必关心原始格式。</li>
+  <li>链适合单向流动的数据处理；需要循环累积时，普通代码更清晰。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>跑通 Map-Reduce 示例。把 <code>chunk_size</code> 从 3000 改成 1000，调用次数和最终摘要的质量有什么变化？</li>
+    <li>在 Refine 示例里把每一步的中间摘要打印出来，观察它是怎么一步步变化的。</li>
+    <li>把 <code>all_docs</code> 的顺序倒过来再跑一次 Refine，最终摘要有没有不同？为什么？</li>
+    <li>找一篇你自己的长文档（一份报告或一篇论文），按决策图判断该用哪种策略，然后实现它。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,1004 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 4 章 · 构建研究摘要引擎 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="4">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 4 章</span>
+<h1>构建研究摘要引擎</h1>
+<p class="lede">
+  这一章做第一个「像样的」应用：你问一个问题，它自己上网搜索、抓取网页、逐页摘要，最后写出一份带引用来源的研究报告。
+  我们会写两遍 —— 先用最直白的顺序代码，再用 LCEL 链重写 —— 这样你能亲眼看到「链」到底带来了什么。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>把一个模糊的需求拆成清晰的处理步骤</li>
+    <li>实现网页搜索和网页抓取两个基础能力</li>
+    <li>理解「查询改写」为什么能明显提升搜索质量</li>
+    <li>让模型输出 JSON，并在代码里解析它</li>
+    <li>用 LCEL 把多条子链组合成一条主链，并让它自动并行</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="overview">从手工到自动</h2>
+
+<p>
+  假设你想了解「西班牙小城阿斯托加有什么可看可玩的」。手工的做法是：打开搜索引擎 → 点开前几条结果 →
+  把每个网页的内容贴给 ChatGPT 让它总结 → 再让它把几份总结合成一篇报告。
+</p>
+<p>每一步都不难，但全是体力活。<strong>研究摘要引擎</strong>就是把这套流程自动化：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="研究摘要引擎的基础流程：问题、网页搜索、抓取、逐页摘要、生成报告">
+  <rect class="bx" x="16" y="70" width="100" height="60" rx="8"/>
+  <text class="ttl" x="66" y="96" text-anchor="middle">用户问题</text><text class="sm" x="66" y="114" text-anchor="middle">阿斯托加…</text>
+  <rect class="bx-b" x="146" y="70" width="110" height="60" rx="8"/>
+  <text class="ttl on-b" x="201" y="96" text-anchor="middle">① 网页搜索</text><text class="sm" x="201" y="114" text-anchor="middle">得到一组 URL</text>
+  <rect class="bx-b" x="286" y="70" width="110" height="60" rx="8"/>
+  <text class="ttl on-b" x="341" y="96" text-anchor="middle">② 抓取正文</text><text class="sm" x="341" y="114" text-anchor="middle">HTML → 纯文本</text>
+  <rect class="bx-a" x="426" y="70" width="110" height="60" rx="8"/>
+  <text class="ttl on-a" x="481" y="96" text-anchor="middle">③ 逐页摘要</text><text class="sm" x="481" y="114" text-anchor="middle">LLM × N</text>
+  <rect class="bx-a" x="566" y="70" width="110" height="60" rx="8"/>
+  <text class="ttl on-a" x="621" y="96" text-anchor="middle">④ 写报告</text><text class="sm" x="621" y="114" text-anchor="middle">LLM × 1</text>
+  <rect class="bx-g" x="700" y="70" width="48" height="60" rx="8"/><text class="ttl on-g" x="724" y="105" text-anchor="middle">报告</text>
+  <path class="ln" d="M118 100 H142" marker-end="url(#ar)"/><path class="ln" d="M258 100 H282" marker-end="url(#ar)"/>
+  <path class="ln" d="M398 100 H422" marker-end="url(#ar)"/><path class="ln" d="M538 100 H562" marker-end="url(#ar)"/>
+  <path class="ln" d="M678 100 H696" marker-end="url(#ar)"/>
+  <text class="sm" x="380" y="34" text-anchor="middle">③ 是上一章的 Map，④ 是 Reduce —— 这就是一个以网页为数据源的 Map-Reduce 摘要</text>
+  <text class="sm" x="380" y="172" text-anchor="middle">①② 是普通程序，不需要 LLM；③④ 才用到模型</text>
+</svg>
+<figcaption>图 4-1　研究摘要引擎 v1</figcaption>
+</figure>
+
+<h2 id="setup">搭建项目</h2>
+
+<p>这一章不再用 Notebook，而是普通的项目结构。对应仓库的 <code>ch04/</code> 目录：</p>
+
+<div class="code" data-lang="text" data-file="ch04/">
+<pre>
+ch04/
+├── .env                      # OPENAI_API_KEY=sk-...   （不要提交到 Git！）
+├── llm_models.py             # 创建 LLM 客户端
+├── prompts.py                # 四个提示词模板
+├── utilities.py              # JSON 字符串 → 对象
+├── web_searching.py          # 搜索：问题 → URL 列表
+├── web_scraping.py           # 抓取：URL → 正文文本
+├── research_engine_seq.py    # 版本一：顺序代码
+├── chain_1_2.py … chain_5_1.py   # 版本二：LCEL 链
+└── chain_try_*.py            # 每条链的试运行脚本
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 密钥别写进代码</div>
+  <p>
+    API Key 放在 <code>.env</code> 文件里，由程序在启动时读入环境变量。并确保 <code>.env</code> 写进了 <code>.gitignore</code> ——
+    泄露到公开仓库的密钥通常几分钟内就会被自动扫描程序盗用。
+  </p>
+</div>
+
+<h2 id="core">四个基础函数</h2>
+
+<h3>网页搜索</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="web_searching.py">
+<pre>
+from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
+from typing import List
+
+def web_search(web_query: str, num_results: int) -&gt; List[str]:
+    return [r["link"]
+        for r in DuckDuckGoSearchAPIWrapper().results(web_query, num_results)]
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="webSearching.ts">
+<pre>
+// npm install duck-duck-scrape
+import { DuckDuckGoSearch } from "@langchain/community/tools/duckduckgo_search";
+
+export async function webSearch(webQuery: string, numResults: number): Promise&lt;string[]&gt; {
+  const tool = new DuckDuckGoSearch({ maxResults: numResults });
+  // 工具返回 JSON 字符串：[{ title, link, snippet }, ...]
+  const results = JSON.parse(await tool.invoke(webQuery)) as { link: string }[];
+  return results.map((r) =&gt; r.link);
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="WebSearching.java">
+<pre>
+// LangChain4j 没有 DuckDuckGo 集成，这里换用 Tavily（有免费额度，需要 TAVILY_API_KEY）。
+// 依赖：langchain4j-web-search-engine-tavily
+import dev.langchain4j.web.search.WebSearchEngine;
+import dev.langchain4j.web.search.WebSearchRequest;
+import dev.langchain4j.web.search.tavily.TavilyWebSearchEngine;
+
+public class WebSearching {
+    private static final WebSearchEngine ENGINE = TavilyWebSearchEngine.builder()
+            .apiKey(System.getenv("TAVILY_API_KEY")).build();
+
+    public static List&lt;String&gt; webSearch(String webQuery, int numResults) {
+        return ENGINE.search(WebSearchRequest.builder()
+                        .searchTerms(webQuery).maxResults(numResults).build())
+                .results().stream()
+                .map(r -&gt; r.url().toString())
+                .toList();
+    }
+}
+</pre>
+</div>
+</div>
+
+<h3>网页抓取</h3>
+
+<p>下载 HTML，去掉所有标签，只留文字。带上浏览器的 <code>User-Agent</code> 请求头，否则不少网站会直接拒绝。</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="web_scraping.py">
+<pre>
+import requests
+from bs4 import BeautifulSoup
+
+def web_scrape(url: str) -&gt; str:
+    try:
+        headers = {
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/124.0.0.0 Safari/537.36"),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
+            return soup.get_text(separator=" ", strip=True)
+        else:
+            return f"Failed to retrieve the webpage: Status code {response.status_code}"
+    except Exception as e:
+        return f"Failed to retrieve the webpage: {e}"
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="webScraping.ts">
+<pre>
+// npm install cheerio
+import * as cheerio from "cheerio";
+
+export async function webScrape(url: string): Promise&lt;string&gt; {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      return `Failed to retrieve the webpage: Status code ${response.status}`;
+    }
+    const $ = cheerio.load(await response.text());
+    $("script, style").remove();
+    return $("body").text().replace(/\s+/g, " ").trim();
+  } catch (e) {
+    return `Failed to retrieve the webpage: ${e}`;
+  }
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="WebScraping.java">
+<pre>
+// 依赖：org.jsoup:jsoup
+import org.jsoup.Jsoup;
+
+public class WebScraping {
+    public static String webScrape(String url) {
+        try {
+            return Jsoup.connect(url)
+                    .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                             + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .timeout(15_000)
+                    .get()
+                    .text();                 // 去掉所有标签，只留文字
+        } catch (Exception e) {
+            return "Failed to retrieve the webpage: " + e.getMessage();
+        }
+    }
+}
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 为什么失败时返回字符串而不是抛异常</div>
+  <p>
+    一次研究要抓好几个网页，其中一两个超时或 403 很正常。如果抛异常，整个流程就中断了；
+    返回一段说明文字，后面的摘要步骤顶多得到一条没用的摘要，其余网页不受影响。这是「<strong>部分失败不该拖垮整体</strong>」的常见处理方式。
+  </p>
+</div>
+
+<h3>LLM 客户端与 JSON 解析</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="llm_models.py + utilities.py">
+<pre>
+# llm_models.py
+from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
+import os
+
+load_dotenv()                                   # 读取 .env
+openai_api_key = os.getenv("OPENAI_API_KEY")
+
+def get_llm():
+    return ChatOpenAI(openai_api_key=openai_api_key, model_name="gpt-5-nano")
+
+# utilities.py
+import json
+
+def to_obj(s):
+    try:
+        return json.loads(s)
+    except Exception:
+        return {}
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="llmModels.ts + utilities.ts">
+<pre>
+// llmModels.ts
+import "dotenv/config";                          // npm install dotenv —— 读取 .env
+import { ChatOpenAI } from "@langchain/openai";
+
+export const getLlm = () =&gt; new ChatOpenAI({ model: "gpt-5-nano" });
+
+// utilities.ts
+export function toObj&lt;T = any&gt;(s: string): T {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return {} as T;
+  }
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="LlmModels.java">
+<pre>
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+
+public class LlmModels {
+    public static ChatModel getLlm() {
+        return OpenAiChatModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY"))
+                .modelName("gpt-5-nano")
+                .build();
+    }
+}
+
+// Java 版不需要 to_obj：后面会让 AI Service 的方法直接返回 record，
+// LangChain4j 会自动要求模型输出 JSON 并解析成对象。
+</pre>
+</div>
+</div>
+
+<h2 id="rewrite">升级架构：先改写问题，再去搜索</h2>
+
+<p>
+  v1 架构有个明显的弱点：直接拿用户的原话去搜。但人提问的方式和搜索引擎喜欢的关键词往往不一样，
+  而且一个问题常常包含多个方面，一次搜索覆盖不全。
+</p>
+<p>改进办法是加两步「让 LLM 先想一想」：</p>
+<ol>
+  <li><strong>选助手</strong>：判断问题属于哪个领域，选一个合适的「专家人设」（导游、金融分析师、体育评论员……）。</li>
+  <li><strong>改写查询</strong>：让这位专家把用户问题改写成<strong>若干条</strong>更适合搜索引擎的查询。</li>
+</ol>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="加入查询改写后的完整架构：一个问题扇出为多条查询、多个网页，最后汇聚成一份报告">
+  <rect class="bx" x="20" y="150" width="96" height="56" rx="8"/>
+  <text class="ttl" x="68" y="174" text-anchor="middle">用户问题</text><text class="sm" x="68" y="192" text-anchor="middle">1 个</text>
+
+  <rect class="bx-p" x="144" y="150" width="104" height="56" rx="8"/>
+  <text class="ttl on-p" x="196" y="174" text-anchor="middle">① 选助手</text><text class="sm" x="196" y="192" text-anchor="middle">LLM</text>
+  <rect class="bx-p" x="276" y="150" width="104" height="56" rx="8"/>
+  <text class="ttl on-p" x="328" y="174" text-anchor="middle">② 改写查询</text><text class="sm" x="328" y="192" text-anchor="middle">LLM → 2 条</text>
+  <path class="ln" d="M118 178 H140" marker-end="url(#ar)"/><path class="ln" d="M250 178 H272" marker-end="url(#ar)"/>
+
+  <rect class="bx-b" x="420" y="60" width="96" height="44" rx="6"/><text class="sm on-b" x="468" y="87" text-anchor="middle">③ 搜索：查询 1</text>
+  <rect class="bx-b" x="420" y="252" width="96" height="44" rx="6"/><text class="sm on-b" x="468" y="279" text-anchor="middle">③ 搜索：查询 2</text>
+  <path class="ln" d="M382 168 L416 90" marker-end="url(#ar)"/><path class="ln" d="M382 188 L416 266" marker-end="url(#ar)"/>
+
+  <rect class="bx-a" x="552" y="16" width="100" height="32" rx="6"/><text class="sm on-a" x="602" y="37" text-anchor="middle">④ 抓取 + 摘要</text>
+  <rect class="bx-a" x="552" y="66" width="100" height="32" rx="6"/><text class="sm on-a" x="602" y="87" text-anchor="middle">④ 抓取 + 摘要</text>
+  <rect class="bx-a" x="552" y="116" width="100" height="32" rx="6"/><text class="sm on-a" x="602" y="137" text-anchor="middle">④ 抓取 + 摘要</text>
+  <rect class="bx-a" x="552" y="208" width="100" height="32" rx="6"/><text class="sm on-a" x="602" y="229" text-anchor="middle">④ 抓取 + 摘要</text>
+  <rect class="bx-a" x="552" y="258" width="100" height="32" rx="6"/><text class="sm on-a" x="602" y="279" text-anchor="middle">④ 抓取 + 摘要</text>
+  <rect class="bx-a" x="552" y="308" width="100" height="32" rx="6"/><text class="sm on-a" x="602" y="329" text-anchor="middle">④ 抓取 + 摘要</text>
+  <path class="ln" d="M518 74 L548 36" marker-end="url(#ar)"/><path class="ln" d="M518 82 H548" marker-end="url(#ar)"/><path class="ln" d="M518 90 L548 128" marker-end="url(#ar)"/>
+  <path class="ln" d="M518 266 L548 228" marker-end="url(#ar)"/><path class="ln" d="M518 274 H548" marker-end="url(#ar)"/><path class="ln" d="M518 282 L548 320" marker-end="url(#ar)"/>
+
+  <rect class="bx-g" x="684" y="150" width="62" height="56" rx="8"/>
+  <text class="ttl on-g" x="715" y="174" text-anchor="middle">⑤ 报告</text><text class="sm" x="715" y="192" text-anchor="middle">LLM</text>
+  <path class="ln-g" d="M654 32 L690 146" marker-end="url(#ar-g)"/><path class="ln-g" d="M654 82 L698 146" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M654 132 L706 146" marker-end="url(#ar-g)"/><path class="ln-g" d="M654 224 L706 210" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M654 274 L698 210" marker-end="url(#ar-g)"/><path class="ln-g" d="M654 324 L690 210" marker-end="url(#ar-g)"/>
+
+  <text class="sm" x="468" y="180" text-anchor="middle">每条查询取 3 个结果</text>
+  <text class="sm" x="196" y="236" text-anchor="middle">扇出 fan-out →</text>
+  <text class="sm" x="640" y="356" text-anchor="middle">← 汇聚 fan-in</text>
+</svg>
+<figcaption>图 4-2　研究摘要引擎 v2：1 个问题 → 2 条查询 → 6 个网页 → 6 份摘要 → 1 份报告</figcaption>
+</figure>
+
+<h2 id="prompts">四个提示词</h2>
+
+<p>完整文本在仓库的 <code>ch04/prompts.py</code>，这里只看每个提示词的关键设计。</p>
+
+<h3>① 选助手：用少样本示例 + JSON 输出</h3>
+
+<div class="code" data-lang="prompt" data-file="ASSISTANT_SELECTION_INSTRUCTIONS（节选）">
+<pre>
+You are skilled at assigning a research question to the correct research assistant.
+There are various research assistants available, each specialized in an area of expertise.
+...
+Examples:
+Question: "Should I invest in Apple stocks?"
+Response:
+{{
+    "assistant_type": "Financial analyst assistant",
+    "assistant_instructions": "You are a seasoned finance analyst AI assistant. Your primary goal is ...",
+    "user_question": {user_question}
+}}
+Question: "what are the most interesting sites in Tel Aviv?"
+Response:
+{{
+    "assistant_type": "Tour guide assistant",
+    "assistant_instructions": "You are a world-travelled AI tour guide assistant. Your main purpose is ...",
+    "user_question": "{user_question}"
+}}
+...
+Now that you have understood all the above, select the correct research assistant
+for the following question.
+Question: {user_question}
+Response:
+</pre>
+</div>
+
+<p>三个值得学的技巧：</p>
+<ul>
+  <li><strong>用例子示范输出格式</strong>（第 2 章的少样本学习）。模型看过几个 JSON 例子后，就会照着格式输出。</li>
+  <li><strong>双花括号 <code>{{ }}</code></strong>：单花括号是模板占位符，想输出字面意义的花括号就得写两个。</li>
+  <li><strong>让输出带上 <code>user_question</code></strong>：这样下一步只需要拿到这一个 JSON，就有了继续处理所需的全部信息。</li>
+</ul>
+
+<h3>② 改写查询</h3>
+
+<div class="code" data-lang="prompt" data-file="WEB_SEARCH_INSTRUCTIONS">
+<pre>
+{assistant_instructions}
+
+Write {num_search_queries} web search queries to gather as much information as possible
+on the following question: {user_question}. Your objective is to write a report based on
+the information you find.
+You must respond with a list of queries such as query1, query2, query3 in the following format:
+[
+    {{"search_query": "query1", "user_question": "{user_question}" }},
+    {{"search_query": "query2", "user_question": "{user_question}" }},
+    {{"search_query": "query3", "user_question": "{user_question}" }}
+]
+</pre>
+</div>
+
+<p>第一行直接把上一步选出来的「助手人设」放进来 —— <strong>一个提示词的输出成为下一个提示词的一部分</strong>，这就是「链」这个名字的由来。</p>
+
+<h3>③ 单页摘要 与 ④ 研究报告</h3>
+
+<div class="code" data-lang="prompt" data-file="SUMMARY_INSTRUCTIONS / RESEARCH_REPORT_INSTRUCTIONS（节选）">
+<pre>
+# ③ 单页摘要
+Read the following text:
+Text: {search_result_text}
+-----------
+Using the above text, answer in short the following question.
+Question: {search_query}
+-----------
+If you cannot answer the question above using the text provided above, then just summarize
+the text. Include all factual information, numbers, stats etc if available.
+
+# ④ 研究报告
+You are an AI critical thinker research assistant. ...
+Information:
+--------
+{research_summary}
+--------
+Using the above information, answer the following question or topic: "{user_question}"
+in a detailed report -- ... a minimum of 1,200 words.
+You must write the report with markdown syntax.
+Write all used source urls at the end of the report, and make sure to not add duplicated sources ...
+</pre>
+</div>
+
+<p>
+  ③ 不是泛泛地总结网页，而是<strong>针对搜索查询</strong>去提取答案，同时留了退路（答不出就做普通摘要）。
+  ④ 明确规定了篇幅、格式和「必须列出来源」。
+</p>
+
+<h2 id="seq">版本一：顺序代码</h2>
+
+<p>先用最直白的方式实现：调模型、拿结果、拼下一个提示词、再调模型……对应仓库的 <code>research_engine_seq.py</code>。</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="research_engine_seq.py">
+<pre>
+NUM_SEARCH_QUERIES = 2
+NUM_SEARCH_RESULTS_PER_QUERY = 3
+RESULT_TEXT_MAX_CHARACTERS = 10000
+question = 'What can I see and do in the Spanish town of Astorga?'
+
+llm = get_llm()
+
+# ① 选助手
+assistant_selection_prompt = ASSISTANT_SELECTION_PROMPT_TEMPLATE.format(
+    user_question=question)
+assistant_instructions = llm.invoke(assistant_selection_prompt)
+assistant_instructions_dict = to_obj(assistant_instructions.content)
+
+# ② 改写成若干条搜索查询
+web_search_prompt = WEB_SEARCH_PROMPT_TEMPLATE.format(
+    assistant_instructions=assistant_instructions_dict['assistant_instructions'],
+    num_search_queries=NUM_SEARCH_QUERIES,
+    user_question=assistant_instructions_dict['user_question'])
+web_search_queries = llm.invoke(web_search_prompt)
+web_search_queries_list = to_obj(web_search_queries.content.replace('\n', ''))
+
+# ③ 每条查询去搜索，把结果摊平成 [{search_query, result_url}, ...]
+search_query_and_result_url_list = []
+for wq in web_search_queries_list:
+    for url in web_search(web_query=wq['search_query'],
+                          num_results=NUM_SEARCH_RESULTS_PER_QUERY):
+        search_query_and_result_url_list.append(
+            {'search_query': wq['search_query'], 'result_url': url})
+
+# ④ 抓取每个网页（只取前 10000 个字符），再逐个摘要
+result_text_summary_list = []
+for re in search_query_and_result_url_list:
+    result_text = web_scrape(url=re['result_url'])[:RESULT_TEXT_MAX_CHARACTERS]
+    summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(
+        search_result_text=result_text, search_query=re['search_query'])
+    text_summary = llm.invoke(summary_prompt)
+    result_text_summary_list.append(
+        {'text_summary': text_summary.content, 'result_url': re['result_url']})
+
+# ⑤ 合并摘要，生成报告
+appended_result_summaries = '\n'.join(
+    f'Source URL: {sr["result_url"]}\nSummary: {sr["text_summary"]}'
+    for sr in result_text_summary_list)
+
+research_report = llm.invoke(RESEARCH_REPORT_PROMPT_TEMPLATE.format(
+    research_summary=appended_result_summaries, user_question=question))
+
+print(research_report.content)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="researchEngineSeq.ts">
+<pre>
+const NUM_SEARCH_QUERIES = 2;
+const NUM_SEARCH_RESULTS_PER_QUERY = 3;
+const RESULT_TEXT_MAX_CHARACTERS = 10000;
+const question = "What can I see and do in the Spanish town of Astorga?";
+
+const llm = getLlm();
+const ask = async (prompt: string) =&gt; (await llm.invoke(prompt)).content as string;
+
+// ① 选助手
+const assistant = toObj(await ask(
+  await ASSISTANT_SELECTION_PROMPT_TEMPLATE.format({ user_question: question })));
+
+// ② 改写成若干条搜索查询
+const queries: { search_query: string }[] = toObj(await ask(
+  await WEB_SEARCH_PROMPT_TEMPLATE.format({
+    assistant_instructions: assistant.assistant_instructions,
+    num_search_queries: NUM_SEARCH_QUERIES,
+    user_question: assistant.user_question,
+  })));
+
+// ③ 每条查询去搜索，摊平
+const queryAndUrls: { search_query: string; result_url: string }[] = [];
+for (const q of queries) {
+  for (const url of await webSearch(q.search_query, NUM_SEARCH_RESULTS_PER_QUERY)) {
+    queryAndUrls.push({ search_query: q.search_query, result_url: url });
+  }
+}
+
+// ④ 抓取 + 逐个摘要
+const summaries: string[] = [];
+for (const item of queryAndUrls) {
+  const text = (await webScrape(item.result_url)).slice(0, RESULT_TEXT_MAX_CHARACTERS);
+  const summary = await ask(await SUMMARY_PROMPT_TEMPLATE.format({
+    search_result_text: text, search_query: item.search_query }));
+  summaries.push(`Source URL: ${item.result_url}\nSummary: ${summary}`);
+}
+
+// ⑤ 生成报告
+const report = await ask(await RESEARCH_REPORT_PROMPT_TEMPLATE.format({
+  research_summary: summaries.join("\n"), user_question: question }));
+
+console.log(report);
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="ResearchEngineSeq.java">
+<pre>
+// 用 AI Service 把四个提示词声明成一个接口。
+// 返回类型是 record 时，LangChain4j 会自动让模型输出 JSON 并解析 —— 所以不需要 to_obj。
+record AssistantInfo(String assistantType, String assistantInstructions, String userQuestion) {}
+record SearchQuery(String searchQuery) {}
+
+interface Researcher {
+    @UserMessage(fromResource = "prompts/assistant_selection.txt")
+    AssistantInfo selectAssistant(@V("user_question") String userQuestion);
+
+    @UserMessage(fromResource = "prompts/web_search.txt")
+    List&lt;SearchQuery&gt; writeQueries(@V("assistant_instructions") String instructions,
+                                   @V("num_search_queries") int n,
+                                   @V("user_question") String userQuestion);
+
+    @UserMessage(fromResource = "prompts/summary.txt")
+    String summarize(@V("search_result_text") String text, @V("search_query") String query);
+
+    @UserMessage(fromResource = "prompts/research_report.txt")
+    String writeReport(@V("research_summary") String summary, @V("user_question") String userQuestion);
+}
+
+Researcher ai = AiServices.create(Researcher.class, LlmModels.getLlm());
+String question = "What can I see and do in the Spanish town of Astorga?";
+
+AssistantInfo assistant = ai.selectAssistant(question);                         // ①
+List&lt;SearchQuery&gt; queries = ai.writeQueries(                                    // ②
+        assistant.assistantInstructions(), 2, question);
+
+List&lt;String&gt; summaries = new ArrayList&lt;&gt;();
+for (SearchQuery q : queries) {
+    for (String url : WebSearching.webSearch(q.searchQuery(), 3)) {             // ③
+        String text = WebScraping.webScrape(url);                               // ④
+        text = text.substring(0, Math.min(text.length(), 10_000));
+        summaries.add("Source URL: " + url + "\nSummary: " + ai.summarize(text, q.searchQuery()));
+    }
+}
+
+System.out.println(ai.writeReport(String.join("\n", summaries), question));    // ⑤
+</pre>
+</div>
+</div>
+
+<p>它能跑，也好懂。但有两个问题：</p>
+
+<div class="vs">
+  <div class="old"><div class="h">问题一：慢</div>
+    <p style="padding:10px 14px;margin:0;font-size:14px">6 个网页是<strong>一个接一个</strong>抓取和摘要的。每次模型调用几秒钟，加起来就是半分钟以上 —— 而它们之间明明没有任何依赖，完全可以同时进行。</p></div>
+  <div class="new"><div class="h">问题二：各步骤纠缠在一起</div>
+    <p style="padding:10px 14px;margin:0;font-size:14px">所有逻辑挤在一个脚本里，想单独测试「改写查询」这一步，或者把「摘要」步骤换成另一种实现，都得动整个文件。</p></div>
+</div>
+
+<h2 id="lcel">版本二：用 LCEL 重写</h2>
+
+<p>思路是把流程拆成五条<strong>各自能独立运行和测试</strong>的小链，再像搭积木一样组合起来：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="五条子链如何嵌套组合成 Web Research 主链，以及两处并行">
+  <rect class="bx-d" x="10" y="10" width="740" height="310" rx="12"/>
+  <text class="ttl" x="26" y="34">web_research_chain（主链）</text>
+
+  <rect class="bx-p" x="26" y="60" width="150" height="56" rx="8"/>
+  <text class="ttl on-p" x="101" y="82" text-anchor="middle">链 1 · 选助手</text>
+  <text class="sm" x="101" y="102" text-anchor="middle">问题 → 助手信息</text>
+  <path class="ln" d="M178 88 H202" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="206" y="60" width="150" height="56" rx="8"/>
+  <text class="ttl on-p" x="281" y="82" text-anchor="middle">链 2 · 改写查询</text>
+  <text class="sm" x="281" y="102" text-anchor="middle">→ 查询列表</text>
+  <path class="ln-a" d="M358 88 H394" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="376" y="54" text-anchor="middle">.map()</text>
+
+  <rect class="bx-d" x="398" y="48" width="336" height="206" rx="10"/>
+  <text class="ttl" x="412" y="70">search_and_summarization_chain</text>
+  <text class="sm" x="412" y="88">每条查询各跑一次（并行）</text>
+  <rect class="bx-b" x="412" y="102" width="140" height="56" rx="8"/>
+  <text class="ttl on-b" x="482" y="124" text-anchor="middle">链 3 · 搜索</text>
+  <text class="sm" x="482" y="144" text-anchor="middle">查询 → URL 列表</text>
+  <path class="ln-a" d="M554 130 H578" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="566" y="97" text-anchor="middle">.map()</text>
+  <rect class="bx-a" x="582" y="102" width="140" height="56" rx="8"/>
+  <text class="ttl on-a" x="652" y="124" text-anchor="middle">链 4 · 抓取+摘要</text>
+  <text class="sm" x="652" y="144" text-anchor="middle">每个 URL 并行</text>
+  <path class="ln" d="M652 160 V184" marker-end="url(#ar)"/>
+  <rect class="bx" x="470" y="188" width="252" height="50" rx="8"/>
+  <text class="lbl" x="596" y="209" text-anchor="middle">合并：把这条查询的几份摘要拼成一段</text>
+  <text class="sm" x="596" y="228" text-anchor="middle">RunnableLambda</text>
+
+  <path class="ln" d="M566 256 V276 H360" marker-end="url(#ar)"/>
+  <rect class="bx" x="206" y="254" width="150" height="50" rx="8"/>
+  <text class="lbl" x="281" y="275" text-anchor="middle">合并所有查询的摘要</text>
+  <text class="sm" x="281" y="293" text-anchor="middle">RunnableLambda</text>
+  <path class="ln" d="M204 279 H180" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="26" y="254" width="150" height="50" rx="8"/>
+  <text class="ttl on-g" x="101" y="275" text-anchor="middle">链 5 · 写报告</text>
+  <text class="sm" x="101" y="293" text-anchor="middle">→ Markdown 报告</text>
+  <text class="sm" x="190" y="170" text-anchor="middle">两处 .map() = 两层并行：</text>
+  <text class="sm" x="190" y="188" text-anchor="middle">多条查询同时搜，每条查询的</text>
+  <text class="sm" x="190" y="206" text-anchor="middle">多个网页同时抓取和摘要</text>
+</svg>
+<figcaption>图 4-3　小链嵌套成大链；橙色的 <code>.map()</code> 是并行发生的地方</figcaption>
+</figure>
+
+<h3>链 1：选助手</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="chain_1_2.py">
+<pre>
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+
+assistant_instructions_chain = (
+    {'user_question': RunnablePassthrough()}     # 字符串 → {'user_question': 字符串}
+    | ASSISTANT_SELECTION_PROMPT_TEMPLATE
+    | get_llm() | StrOutputParser() | to_obj     # 消息 → 字符串 → 字典
+)
+
+# 试运行
+print(assistant_instructions_chain.invoke(
+    'What can I see and do in the Spanish town of Astorga?'))
+# {'assistant_type': 'Tour guide assistant', 'assistant_instructions': '...', 'user_question': '...'}
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="chain1.ts">
+<pre>
+import { RunnableLambda, RunnablePassthrough, RunnableSequence } from "@langchain/core/runnables";
+import { StringOutputParser } from "@langchain/core/output_parsers";
+
+export const assistantInstructionsChain = RunnableSequence.from([
+  { user_question: new RunnablePassthrough() },   // 字符串 → { user_question: 字符串 }
+  ASSISTANT_SELECTION_PROMPT_TEMPLATE,
+  getLlm(),
+  new StringOutputParser(),
+  RunnableLambda.from(toObj),                     // 字符串 → 对象
+]);
+
+// 试运行
+console.log(await assistantInstructionsChain.invoke(
+  "What can I see and do in the Spanish town of Astorga?"));
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="链 1">
+<pre>
+// 对应的就是上面 Researcher 接口里的 selectAssistant() ——
+// 「模板 | 模型 | 解析成对象」被 AI Service 一个方法声明全包了。
+AssistantInfo assistant = ai.selectAssistant(
+        "What can I see and do in the Spanish town of Astorga?");
+System.out.println(assistant);
+// AssistantInfo[assistantType=Tour guide assistant, assistantInstructions=..., userQuestion=...]
+</pre>
+</div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; RunnablePassthrough 与「字典即并行」</div>
+  <p>
+    <code>RunnablePassthrough()</code> 的意思是「输入是什么就原样传下去」。
+    而在 LCEL 里，一个<strong>字典</strong>会被自动当作 <code>RunnableParallel</code>：它的每个值各自处理同一份输入，结果按键组装成新字典。
+    所以 <code>{'user_question': RunnablePassthrough()}</code> 就是「把输入字符串包成一个带 <code>user_question</code> 键的字典」。
+  </p>
+</div>
+
+<h3>链 2：改写查询 · 链 3：搜索</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="chain_2_1.py + chain_3_1.py">
+<pre>
+NUM_SEARCH_QUERIES = 2
+NUM_SEARCH_RESULTS_PER_QUERY = 3
+
+# 链 2：助手信息 → [{'search_query': ..., 'user_question': ...}, ...]
+web_searches_chain = (
+    RunnableLambda(lambda x: {
+        'assistant_instructions': x['assistant_instructions'],
+        'num_search_queries': NUM_SEARCH_QUERIES,
+        'user_question': x['user_question']})
+    | WEB_SEARCH_PROMPT_TEMPLATE
+    | get_llm() | StrOutputParser() | to_obj
+)
+
+# 链 3：一条查询 → [{'result_url': ..., 'search_query': ..., 'user_question': ...}, ...]
+search_result_urls_chain = RunnableLambda(lambda x: [
+    {'result_url': url,
+     'search_query': x['search_query'],
+     'user_question': x['user_question']}
+    for url in web_search(web_query=x['search_query'],
+                          num_results=NUM_SEARCH_RESULTS_PER_QUERY)
+])
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="chain2.ts + chain3.ts">
+<pre>
+const NUM_SEARCH_QUERIES = 2;
+const NUM_SEARCH_RESULTS_PER_QUERY = 3;
+
+type Query = { search_query: string; user_question: string };
+
+// 链 2：助手信息 → Query[]
+export const webSearchesChain = RunnableSequence.from([
+  RunnableLambda.from((x: any) =&gt; ({
+    assistant_instructions: x.assistant_instructions,
+    num_search_queries: NUM_SEARCH_QUERIES,
+    user_question: x.user_question,
+  })),
+  WEB_SEARCH_PROMPT_TEMPLATE,
+  getLlm(),
+  new StringOutputParser(),
+  RunnableLambda.from((s: string) =&gt; toObj&lt;Query[]&gt;(s)),
+]);
+
+// 链 3：一条查询 → [{ result_url, search_query, user_question }, ...]
+export const searchResultUrlsChain = RunnableLambda.from(async (x: Query) =&gt;
+  (await webSearch(x.search_query, NUM_SEARCH_RESULTS_PER_QUERY)).map((url) =&gt; ({
+    result_url: url,
+    search_query: x.search_query,
+    user_question: x.user_question,
+  })));
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="链 2 + 链 3">
+<pre>
+// 链 2
+List&lt;SearchQuery&gt; queries = ai.writeQueries(assistant.assistantInstructions(), 2, question);
+
+// 链 3：就是普通方法调用
+record SearchResult(String resultUrl, String searchQuery) {}
+
+static List&lt;SearchResult&gt; searchResultUrls(SearchQuery q) {
+    return WebSearching.webSearch(q.searchQuery(), 3).stream()
+            .map(url -&gt; new SearchResult(url, q.searchQuery()))
+            .toList();
+}
+</pre>
+</div>
+</div>
+
+<p>留意一个细节：每一步的输出都把 <code>user_question</code> <strong>继续往下带</strong>。链是一根单向的管子，后面的步骤拿不到更早的数据，除非有人一路把它传下来。这是 LCEL 里常见的小麻烦，也是第 5 章引入「共享状态」的动机之一。</p>
+
+<h3>链 4：抓取并摘要一个网页</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="chain_4_1.py">
+<pre>
+RESULT_TEXT_MAX_CHARACTERS = 10000
+
+search_result_text_and_summary_chain = (
+    RunnableLambda(lambda x: {                         # 第一步：抓取网页
+        'search_result_text':
+            web_scrape(url=x['result_url'])[:RESULT_TEXT_MAX_CHARACTERS],
+        'result_url': x['result_url'],
+        'search_query': x['search_query'],
+        'user_question': x['user_question']})
+    | RunnableParallel({                               # 第二步：三件事同时做
+        'text_summary': SUMMARY_PROMPT_TEMPLATE | get_llm() | StrOutputParser(),
+        'result_url': lambda x: x['result_url'],       #   其中两件只是把字段原样带下去
+        'user_question': lambda x: x['user_question']})
+    | RunnableLambda(lambda x: {                       # 第三步：整理成「来源 + 摘要」
+        'summary': f"Source Url: {x['result_url']}\nSummary: {x['text_summary']}",
+        'user_question': x['user_question']})
+)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="chain4.ts">
+<pre>
+import { RunnableParallel } from "@langchain/core/runnables";
+
+const RESULT_TEXT_MAX_CHARACTERS = 10000;
+
+export const searchResultTextAndSummaryChain = RunnableSequence.from([
+  RunnableLambda.from(async (x: any) =&gt; ({               // 第一步：抓取网页
+    search_result_text: (await webScrape(x.result_url)).slice(0, RESULT_TEXT_MAX_CHARACTERS),
+    result_url: x.result_url,
+    search_query: x.search_query,
+    user_question: x.user_question,
+  })),
+  RunnableParallel.from({                                // 第二步：三件事同时做
+    text_summary: SUMMARY_PROMPT_TEMPLATE.pipe(getLlm()).pipe(new StringOutputParser()),
+    result_url: (x: any) =&gt; x.result_url,
+    user_question: (x: any) =&gt; x.user_question,
+  }),
+  RunnableLambda.from((x: any) =&gt; ({                     // 第三步：整理成「来源 + 摘要」
+    summary: `Source Url: ${x.result_url}\nSummary: ${x.text_summary}`,
+    user_question: x.user_question,
+  })),
+]);
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="链 4">
+<pre>
+static String scrapeAndSummarize(Researcher ai, SearchResult r) {
+    String text = WebScraping.webScrape(r.resultUrl());
+    text = text.substring(0, Math.min(text.length(), 10_000));
+    String summary = ai.summarize(text, r.searchQuery());
+    return "Source Url: " + r.resultUrl() + "\nSummary: " + summary;
+}
+</pre>
+</div>
+</div>
+
+<h3>链 5：组装主链</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="chain_5_1.py">
+<pre>
+# 一条查询 → 搜索 → 每个 URL 并行抓取摘要 → 合并
+search_and_summarization_chain = (
+    search_result_urls_chain
+    | search_result_text_and_summary_chain.map()      # 对每个 URL 并行
+    | RunnableLambda(lambda x: {
+        'summary': '\n'.join([i['summary'] for i in x]),
+        'user_question': x[0]['user_question'] if len(x) &gt; 0 else ''})
+)
+
+# 主链
+web_research_chain = (
+    assistant_instructions_chain
+    | web_searches_chain
+    | search_and_summarization_chain.map()            # 对每条查询并行
+    | RunnableLambda(lambda x: {
+        'research_summary': '\n\n'.join([i['summary'] for i in x]),
+        'user_question': x[0]['user_question'] if len(x) &gt; 0 else ''})
+    | RESEARCH_REPORT_PROMPT_TEMPLATE | get_llm() | StrOutputParser()
+)
+
+# 运行
+question = 'What can I see and do in the Spanish town of Astorga?'
+print(web_research_chain.invoke(question))
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="chain5.ts">
+<pre>
+type Summary = { summary: string; user_question: string };
+
+// 一条查询 → 搜索 → 每个 URL 并行抓取摘要 → 合并
+const searchAndSummarizationChain = searchResultUrlsChain
+  .pipe(searchResultTextAndSummaryChain.map())        // 对每个 URL 并行
+  .pipe(RunnableLambda.from((x: Summary[]) =&gt; ({
+    summary: x.map((i) =&gt; i.summary).join("\n"),
+    user_question: x[0]?.user_question ?? "",
+  })));
+
+// 主链
+export const webResearchChain = assistantInstructionsChain
+  .pipe(webSearchesChain)
+  .pipe(searchAndSummarizationChain.map())            // 对每条查询并行
+  .pipe(RunnableLambda.from((x: Summary[]) =&gt; ({
+    research_summary: x.map((i) =&gt; i.summary).join("\n\n"),
+    user_question: x[0]?.user_question ?? "",
+  })))
+  .pipe(RESEARCH_REPORT_PROMPT_TEMPLATE)
+  .pipe(getLlm())
+  .pipe(new StringOutputParser());
+
+// 运行
+console.log(await webResearchChain.invoke(
+  "What can I see and do in the Spanish town of Astorga?"));
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="WebResearch.java">
+<pre>
+// Java 没有 .map() 管道，用 CompletableFuture 表达同样的「两层并行」。
+static String webResearch(Researcher ai, String question) {
+    AssistantInfo assistant = ai.selectAssistant(question);
+    List&lt;SearchQuery&gt; queries = ai.writeQueries(assistant.assistantInstructions(), 2, question);
+
+    var executor = Executors.newVirtualThreadPerTaskExecutor();     // Java 21 虚拟线程
+
+    List&lt;CompletableFuture&lt;String&gt;&gt; perQuery = queries.stream()
+            .map(q -&gt; CompletableFuture.supplyAsync(() -&gt; {         // 每条查询并行
+                var perUrl = searchResultUrls(q).stream()
+                        .map(r -&gt; CompletableFuture.supplyAsync(    // 每个 URL 并行
+                                () -&gt; scrapeAndSummarize(ai, r), executor))
+                        .toList();
+                return perUrl.stream().map(CompletableFuture::join)
+                        .collect(Collectors.joining("\n"));
+            }, executor))
+            .toList();
+
+    String researchSummary = perQuery.stream().map(CompletableFuture::join)
+            .collect(Collectors.joining("\n\n"));
+
+    return ai.writeReport(researchSummary, question);
+}
+</pre>
+</div>
+</div>
+
+<h3>快了多少</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="顺序执行与并行执行的时间线对比">
+  <text class="ttl" x="20" y="28">顺序版</text>
+  <rect class="bx-p" x="90" y="12" width="50" height="26" rx="4"/><rect class="bx-p" x="142" y="12" width="50" height="26" rx="4"/>
+  <rect class="bx-a" x="194" y="12" width="76" height="26" rx="4"/><rect class="bx-a" x="272" y="12" width="76" height="26" rx="4"/>
+  <rect class="bx-a" x="350" y="12" width="76" height="26" rx="4"/><rect class="bx-a" x="428" y="12" width="76" height="26" rx="4"/>
+  <rect class="bx-a" x="506" y="12" width="76" height="26" rx="4"/><rect class="bx-a" x="584" y="12" width="76" height="26" rx="4"/>
+  <rect class="bx-g" x="662" y="12" width="80" height="26" rx="4"/>
+  <text class="sm" x="115" y="30" text-anchor="middle">选助手</text><text class="sm" x="167" y="30" text-anchor="middle">改写</text>
+  <text class="sm" x="232" y="30" text-anchor="middle">网页 1</text><text class="sm" x="310" y="30" text-anchor="middle">网页 2</text>
+  <text class="sm" x="388" y="30" text-anchor="middle">网页 3</text><text class="sm" x="466" y="30" text-anchor="middle">网页 4</text>
+  <text class="sm" x="544" y="30" text-anchor="middle">网页 5</text><text class="sm" x="622" y="30" text-anchor="middle">网页 6</text>
+  <text class="sm" x="702" y="30" text-anchor="middle">写报告</text>
+
+  <text class="ttl" x="20" y="118">LCEL 版</text>
+  <rect class="bx-p" x="90" y="100" width="50" height="26" rx="4"/><rect class="bx-p" x="142" y="100" width="50" height="26" rx="4"/>
+  <text class="sm" x="115" y="118" text-anchor="middle">选助手</text><text class="sm" x="167" y="118" text-anchor="middle">改写</text>
+  <rect class="bx-a" x="194" y="62" width="76" height="20" rx="4"/><rect class="bx-a" x="194" y="84" width="76" height="20" rx="4"/>
+  <rect class="bx-a" x="194" y="106" width="76" height="20" rx="4"/><rect class="bx-a" x="194" y="128" width="76" height="20" rx="4"/>
+  <rect class="bx-a" x="194" y="150" width="76" height="20" rx="4"/><rect class="bx-a" x="194" y="172" width="76" height="20" rx="4"/>
+  <text class="sm" x="232" y="77" text-anchor="middle">网页 1</text><text class="sm" x="232" y="99" text-anchor="middle">网页 2</text>
+  <text class="sm" x="232" y="121" text-anchor="middle">网页 3</text><text class="sm" x="232" y="143" text-anchor="middle">网页 4</text>
+  <text class="sm" x="232" y="165" text-anchor="middle">网页 5</text><text class="sm" x="232" y="187" text-anchor="middle">网页 6</text>
+  <rect class="bx-g" x="272" y="100" width="80" height="26" rx="4"/><text class="sm" x="312" y="118" text-anchor="middle">写报告</text>
+  <path class="ln-g" d="M362 113 H740" style="stroke-dasharray:4 4"/>
+  <text class="sm on-g" x="550" y="106" text-anchor="middle">省下来的时间</text>
+  <path class="ln" d="M90 202 H742" marker-end="url(#ar)"/><text class="sm" x="742" y="198" text-anchor="end">时间 →</text>
+</svg>
+<figcaption>图 4-4　六个网页的抓取和摘要从排队变成了同时进行</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#128273; LCEL 带来的三个实际好处</div>
+  <ul>
+    <li><strong>并行是免费的</strong>：加一个 <code>.map()</code> 就行，不用自己管线程或 <code>asyncio</code>。</li>
+    <li><strong>每条链都能单独测试</strong>：仓库里的 <code>chain_try_*.py</code> 就是逐条验证的脚本，出问题时很容易定位到是哪一环。</li>
+    <li><strong>积木可替换</strong>：想换个搜索引擎，只动链 3；想换个摘要提示词，只动链 4。</li>
+  </ul>
+</div>
+
+<h2 id="limits">这个引擎还缺什么</h2>
+
+<p>
+  流程是一条直线：搜到什么就用什么。如果搜回来的网页大多不相关呢？它还是会硬着头皮写一篇报告。
+  我们希望它能<strong>检查搜索结果的质量，不行就换个搜法再来一遍</strong> —— 这需要「回头」的能力，而单向的链做不到。
+  下一章用 LangGraph 来解决。
+</p>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>研究摘要引擎 = 搜索 + 抓取 + 逐页摘要 + 写报告，本质上是以网页为数据源的 Map-Reduce。</li>
+  <li>在搜索前加入「选助手」和「查询改写」两步，能显著改善搜到的内容。</li>
+  <li>想让模型输出结构化数据：在提示词里用例子示范 JSON 格式，再用解析器转成对象（Java 里直接声明返回类型）。</li>
+  <li>顺序代码直观但慢，且各步骤耦合在一起。</li>
+  <li>LCEL 把流程拆成可独立测试的小链；<code>.map()</code> 和 <code>RunnableParallel</code> 让并行几乎不费力气。</li>
+  <li>链是单向的：数据要一路往下传，流程不能回头 —— 这是它的局限。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>换一个完全不同领域的问题（比如「该不该买入某只股票」），看看「选助手」这一步选了谁。</li>
+    <li>分别给顺序版和 LCEL 版计时，实际快了多少倍？</li>
+    <li>把 <code>NUM_SEARCH_QUERIES</code> 改成 4、<code>NUM_SEARCH_RESULTS_PER_QUERY</code> 改成 2，报告质量和费用各有什么变化？</li>
+    <li>在「选助手」的提示词里加一种新助手（比如「美食评论助手」），并补上一个对应的示例。</li>
+    <li>思考题：如果某个网页抓取失败了，现在的代码会怎样？你觉得更好的处理方式是什么？</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

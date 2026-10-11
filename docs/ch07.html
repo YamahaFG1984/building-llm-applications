@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 7 章 · 问答机器人与 LangSmith — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="7">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 7 章</span>
+<h1>问答机器人与 LangSmith</h1>
+<p class="lede">
+  上一章手写了一个最小的 RAG。现在用框架把它做成真正的问答机器人：
+  能吃进各种格式的文档、能记住上文接着聊，还能把每一次运行的内部细节摊开来看 —— 后者靠的是 LangSmith。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>认识 RAG 两个阶段各自用到的 LangChain 对象</li>
+    <li>把维基百科、Word、PDF、文本文件批量入库</li>
+    <li>用检索器 + 提示词 + 模型搭一条 RAG 链</li>
+    <li>给机器人加上对话记忆，让它听得懂「然后呢？」</li>
+    <li>用 LangSmith 追踪和调试链的执行</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="model">对象模型：谁负责什么</h2>
+
+<p>先看全景。上一章手写的每一步，在 LangChain 里都有一个对应的对象：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="入库阶段与问答阶段各自涉及的 LangChain 对象及其数据流">
+  <text class="ttl on-b" x="20" y="24">入库阶段</text>
+  <rect class="bx-b" x="20" y="38" width="140" height="62" rx="8"/>
+  <text class="mono on-b" x="90" y="62" text-anchor="middle">DocumentLoader</text><text class="sm" x="90" y="84" text-anchor="middle">.load()</text>
+  <rect class="bx-b" x="214" y="38" width="140" height="62" rx="8"/>
+  <text class="mono on-b" x="284" y="62" text-anchor="middle">TextSplitter</text><text class="sm" x="284" y="84" text-anchor="middle">.split_documents()</text>
+  <rect class="bx-b" x="408" y="38" width="140" height="62" rx="8"/>
+  <text class="mono on-b" x="478" y="62" text-anchor="middle">Embeddings</text><text class="sm" x="478" y="84" text-anchor="middle">文本 → 向量</text>
+  <rect class="bx-p" x="602" y="38" width="140" height="62" rx="8"/>
+  <text class="mono on-p" x="672" y="62" text-anchor="middle">VectorStore</text><text class="sm" x="672" y="84" text-anchor="middle">.add_documents()</text>
+  <path class="ln" d="M162 69 H210" marker-end="url(#ar)"/><text class="sm" x="186" y="60" text-anchor="middle">文档</text>
+  <path class="ln" d="M356 69 H404" marker-end="url(#ar)"/><text class="sm" x="380" y="60" text-anchor="middle">小块</text>
+  <path class="ln" d="M550 69 H598" marker-end="url(#ar)"/><text class="sm" x="574" y="60" text-anchor="middle">向量</text>
+
+  <path class="ln-d" d="M20 132 H742"/>
+
+  <text class="ttl on-a" x="20" y="162">问答阶段</text>
+  <rect class="bx" x="20" y="198" width="100" height="62" rx="8"/><text class="lbl" x="70" y="234" text-anchor="middle">问题</text>
+  <rect class="bx-p" x="172" y="176" width="130" height="50" rx="8"/>
+  <text class="mono on-p" x="237" y="198" text-anchor="middle">Retriever</text><text class="sm" x="237" y="216" text-anchor="middle">问题 → 相关文档</text>
+  <rect class="bx" x="172" y="236" width="130" height="50" rx="8"/>
+  <text class="mono" x="237" y="258" text-anchor="middle">Passthrough</text><text class="sm" x="237" y="276" text-anchor="middle">问题原样通过</text>
+  <rect class="bx-g" x="360" y="198" width="140" height="62" rx="8"/>
+  <text class="mono on-g" x="430" y="222" text-anchor="middle">PromptTemplate</text><text class="sm" x="430" y="244" text-anchor="middle">{context} + {question}</text>
+  <rect class="bx-a" x="554" y="198" width="100" height="62" rx="8"/>
+  <text class="mono on-a" x="604" y="222" text-anchor="middle">ChatModel</text><text class="sm" x="604" y="244" text-anchor="middle">LLM</text>
+  <text class="lbl" x="716" y="234" text-anchor="middle">答案</text>
+  <path class="ln" d="M122 220 L168 204" marker-end="url(#ar)"/><path class="ln" d="M122 238 L168 256" marker-end="url(#ar)"/>
+  <path class="ln" d="M304 201 L356 220" marker-end="url(#ar)"/><path class="ln" d="M304 261 L356 240" marker-end="url(#ar)"/>
+  <path class="ln" d="M502 229 H550" marker-end="url(#ar)"/><path class="ln" d="M656 229 H694" marker-end="url(#ar)"/>
+  <path class="ln-p" d="M672 102 V150 H237 V172" marker-end="url(#ar-p)"/>
+  <text class="sm on-p" x="450" y="144" text-anchor="middle">vector_db.as_retriever()</text>
+  <text class="sm" x="380" y="318" text-anchor="middle">rag_chain = {"context": retriever, "question": RunnablePassthrough()} | rag_prompt | chatbot</text>
+</svg>
+<figcaption>图 7-1　上半部分提前跑一次，下半部分每次提问都跑</figcaption>
+</figure>
+
+<h2 id="ingest">把文档入库</h2>
+
+<p>对应仓库的 <code>ch07/07-QA_across_documents.ipynb</code>。先准备三样东西：切分器、嵌入模型、向量库。</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_community.document_loaders import (
+    WikipediaLoader, Docx2txtLoader, PyPDFLoader, TextLoader)
+from langchain_chroma import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings
+
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=0)
+embeddings_model = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+vector_db = Chroma("tourist_info", embeddings_model)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// 需要一个运行中的 Chroma 服务：docker run -p 8000:8000 chromadb/chroma
+import { Chroma } from "@langchain/community/vectorstores/chroma";
+import { OpenAIEmbeddings } from "@langchain/openai";
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+
+const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 500, chunkOverlap: 0 });
+const embeddingsModel = new OpenAIEmbeddings();
+const vectorDb = new Chroma(embeddingsModel, {
+  collectionName: "tourist_info",
+  url: "http://localhost:8000",
+});
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.data.document.splitter.DocumentSplitters;
+import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
+import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
+
+var embeddingsModel = OpenAiEmbeddingModel.builder()
+        .apiKey(System.getenv("OPENAI_API_KEY"))
+        .modelName("text-embedding-3-small")
+        .build();
+
+var vectorDb = ChromaEmbeddingStore.builder()
+        .baseUrl("http://localhost:8000").collectionName("tourist_info").build();
+
+// Ingestor = 「切分 → 向量化 → 存储」三步打包
+var ingestor = EmbeddingStoreIngestor.builder()
+        .documentSplitter(DocumentSplitters.recursive(500, 0))
+        .embeddingModel(embeddingsModel)
+        .embeddingStore(vectorDb)
+        .build();
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; RecursiveCharacterTextSplitter 的「递归」是什么意思</div>
+  <p>
+    它不会机械地每 500 个字符切一刀，而是先尝试按<strong>段落</strong>（空行）切；某一段还是太长，再按<strong>换行</strong>切；
+    再不行按<strong>句子</strong>、按<strong>单词</strong>…… 这样切出来的块尽量保持语义完整，是最常用的默认切分器。
+  </p>
+</div>
+
+<h3>四种来源，同一套动作</h3>
+
+<p>每种文档都是「加载 → 切分 → 入库」。写四遍就能发现重复，所以直接提炼成一个函数：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+def split_and_import(loader):
+    chunks = text_splitter.split_documents(loader.load())
+    vector_db.add_documents(chunks)
+    print(f"Ingested chunks created by {loader}")
+
+split_and_import(WikipediaLoader(query="Paestum"))
+split_and_import(Docx2txtLoader("Paestum/Paestum-Britannica.docx"))
+split_and_import(PyPDFLoader("Paestum/PaestumRevisited.pdf"))
+split_and_import(TextLoader("Paestum/Paestum-Encyclopedia.txt"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import type { BaseDocumentLoader } from "@langchain/core/document_loaders/base";
+import { DocxLoader } from "@langchain/community/document_loaders/fs/docx";
+import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
+import { TextLoader } from "@langchain/classic/document_loaders/fs/text";
+
+async function splitAndImport(loader: BaseDocumentLoader) {
+  const chunks = await textSplitter.splitDocuments(await loader.load());
+  await vectorDb.addDocuments(chunks);
+  console.log(`Ingested ${chunks.length} chunks from ${loader.constructor.name}`);
+}
+
+await splitAndImport(new DocxLoader("Paestum/Paestum-Britannica.docx"));
+await splitAndImport(new PDFLoader("Paestum/PaestumRevisited.pdf"));
+await splitAndImport(new TextLoader("Paestum/Paestum-Encyclopedia.txt"));
+// 维基百科：见第 3 章的 WikipediaQueryRun 写法，取回文本后同样 splitDocuments + addDocuments
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
+import dev.langchain4j.data.document.parser.apache.tika.ApacheTikaDocumentParser;
+
+var tika = new ApacheTikaDocumentParser();       // 自动识别 docx / pdf / txt
+
+ingestor.ingest(FileSystemDocumentLoader.loadDocument(Path.of("Paestum/Paestum-Britannica.docx"), tika));
+ingestor.ingest(FileSystemDocumentLoader.loadDocument(Path.of("Paestum/PaestumRevisited.pdf"), tika));
+ingestor.ingest(FileSystemDocumentLoader.loadDocument(Path.of("Paestum/Paestum-Encyclopedia.txt"), tika));
+// 维基百科：见第 3 章的 UrlDocumentLoader 写法，得到 Document 后同样 ingestor.ingest(doc)
+</pre>
+</div>
+</div>
+
+<h3>整个文件夹一起入库</h3>
+
+<p>
+  文件一多，逐个写就不现实了。做一个<strong>加载器工厂</strong>：看扩展名决定用哪个加载器，再遍历文件夹。
+  仓库里用来练习的是 <code>CilentoTouristInfo/</code> 目录。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+import os
+
+loader_classes = {
+    'docx': Docx2txtLoader,
+    'pdf': PyPDFLoader,
+    'txt': TextLoader
+}
+
+def get_loader(filename):
+    _, file_extension = os.path.splitext(filename)
+    file_extension = file_extension.lstrip('.')
+    loader_class = loader_classes.get(file_extension)
+    if loader_class:
+        return loader_class(filename)
+    raise ValueError(f"No loader available for file extension '{file_extension}'")
+
+folder_path = "CilentoTouristInfo"
+for filename in os.listdir(folder_path):
+    file_path = os.path.join(folder_path, filename)
+    if os.path.isfile(file_path):
+        try:
+            split_and_import(get_loader(file_path))
+        except ValueError as e:
+            print(e)              # 不认识的格式：跳过并提示，不中断整个流程
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { readdir } from "node:fs/promises";
+import path from "node:path";
+
+const loaderClasses: Record&lt;string, new (p: string) =&gt; BaseDocumentLoader&gt; = {
+  ".docx": DocxLoader,
+  ".pdf": PDFLoader,
+  ".txt": TextLoader,
+};
+
+function getLoader(filename: string): BaseDocumentLoader {
+  const LoaderClass = loaderClasses[path.extname(filename).toLowerCase()];
+  if (!LoaderClass) {
+    throw new Error(`No loader available for file extension '${path.extname(filename)}'`);
+  }
+  return new LoaderClass(filename);
+}
+
+const folderPath = "CilentoTouristInfo";
+for (const entry of await readdir(folderPath, { withFileTypes: true })) {
+  if (!entry.isFile()) continue;
+  try {
+    await splitAndImport(getLoader(path.join(folderPath, entry.name)));
+  } catch (e) {
+    console.warn(String(e));      // 不认识的格式：跳过并提示
+  }
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// Tika 解析器本身就能识别各种格式，所以不需要自己写工厂 ——
+// 一行就能把文件夹里符合条件的文件全部读进来。
+import java.nio.file.FileSystems;
+
+var matcher = FileSystems.getDefault().getPathMatcher("glob:*.{docx,pdf,txt}");
+
+List&lt;Document&gt; docs = FileSystemDocumentLoader.loadDocuments(
+        Path.of("CilentoTouristInfo"), matcher, new ApacheTikaDocumentParser());
+
+ingestor.ingest(docs);
+</pre>
+</div>
+</div>
+
+<h2 id="query">直接查向量库</h2>
+
+<p>入库完成后，先别急着接模型，单独验证一下检索是否靠谱：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+query = "Where was Poseidonia and who renamed it to Paestum?"
+results = vector_db.similarity_search(query, 4)     # 最相近的 4 块
+for doc in results:
+    print(doc.metadata.get("source"), "→", doc.page_content[:80])
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const query = "Where was Poseidonia and who renamed it to Paestum?";
+const results = await vectorDb.similaritySearch(query, 4);     // 最相近的 4 块
+for (const doc of results) {
+  console.log(doc.metadata.source, "→", doc.pageContent.slice(0, 80));
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+String query = "Where was Poseidonia and who renamed it to Paestum?";
+
+var request = EmbeddingSearchRequest.builder()
+        .queryEmbedding(embeddingsModel.embed(query).content())
+        .maxResults(4)                                         // 最相近的 4 块
+        .build();
+
+vectorDb.search(request).matches().forEach(m -&gt;
+        System.out.println(m.embedded().metadata().getString("file_name")
+                + " → " + m.embedded().text().substring(0, 80)));
+</pre>
+</div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 先看检索，再看生成</div>
+  <p>
+    RAG 回答得不好，十有八九是<strong>检索</strong>出了问题 —— 相关的文本块根本没被找出来，模型再强也无米下炊。
+    所以调试时永远先单独检查检索结果。
+  </p>
+</div>
+
+<h2 id="chain">搭一条 RAG 链</h2>
+
+<p>把向量库包装成<strong>检索器</strong>（Retriever），它就成了一块可以接进链里的标准积木：输入问题字符串，输出文档列表。</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_openai import ChatOpenAI
+
+rag_prompt = PromptTemplate.from_template(
+"""Use the following pieces of context to answer the question at the end.
+If you don't know the answer, just say that you don't know,
+don't try to make up an answer.
+Use three sentences maximum and keep the answer as concise as possible.
+{context}
+Question: {question}
+Helpful Answer:""")
+
+retriever = vector_db.as_retriever()
+question_feeder = RunnablePassthrough()
+chatbot = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-5-nano")
+
+rag_chain = {"context": retriever,
+             "question": question_feeder} | rag_prompt | chatbot
+
+def execute_chain(chain, question):
+    return chain.invoke(question)
+
+question = """Where was Poseidonia and who renamed
+it to Paestum. Also tell me the source."""
+print(execute_chain(rag_chain, question).content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { PromptTemplate } from "@langchain/core/prompts";
+import { RunnablePassthrough, RunnableSequence } from "@langchain/core/runnables";
+import { ChatOpenAI } from "@langchain/openai";
+import type { Document } from "@langchain/core/documents";
+
+const ragPrompt = PromptTemplate.fromTemplate(
+`Use the following pieces of context to answer the question at the end.
+If you don't know the answer, just say that you don't know,
+don't try to make up an answer.
+Use three sentences maximum and keep the answer as concise as possible.
+{context}
+Question: {question}
+Helpful Answer:`);
+
+const retriever = vectorDb.asRetriever();
+const chatbot = new ChatOpenAI({ model: "gpt-5-nano" });
+
+// 把文档列表拼成一段文本，并带上来源
+const formatDocs = (docs: Document[]) =&gt;
+  docs.map((d) =&gt; `${d.pageContent}\n(source: ${d.metadata.source})`).join("\n\n");
+
+const ragChain = RunnableSequence.from([
+  { context: retriever.pipe(formatDocs), question: new RunnablePassthrough() },
+  ragPrompt,
+  chatbot,
+]);
+
+const question = `Where was Poseidonia and who renamed
+it to Paestum. Also tell me the source.`;
+console.log((await ragChain.invoke(question)).content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.SystemMessage;
+
+var retriever = EmbeddingStoreContentRetriever.builder()
+        .embeddingStore(vectorDb)
+        .embeddingModel(embeddingsModel)
+        .maxResults(4)
+        .build();
+
+interface TourGuide {
+    @SystemMessage("""
+            Use the retrieved context to answer the question.
+            If you don't know the answer, just say that you don't know,
+            don't try to make up an answer.
+            Use three sentences maximum and keep the answer as concise as possible.""")
+    String answer(String question);
+}
+
+// 给 AI Service 配一个 contentRetriever，它就自动变成 RAG：
+// 每次调用前先检索，再把检索到的内容拼进用户消息里。
+TourGuide chatbot = AiServices.builder(TourGuide.class)
+        .chatModel(OpenAiChatModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY")).modelName("gpt-5-nano").build())
+        .contentRetriever(retriever)
+        .build();
+
+System.out.println(chatbot.answer(
+        "Where was Poseidonia and who renamed it to Paestum. Also tell me the source."));
+</pre>
+</div>
+</div>
+
+<p>链开头那个字典是关键。它让同一个问题<strong>兵分两路</strong>：</p>
+<ul>
+  <li><code>"context": retriever</code> —— 问题进入检索器，出来的是相关文档；</li>
+  <li><code>"question": RunnablePassthrough()</code> —— 问题原样通过。</li>
+</ul>
+<p>两路结果合成一个 <code>{context, question}</code> 字典，正好填进提示词模板的两个占位符。</p>
+
+<h3>追问一句，它就傻了</h3>
+
+<div class="code" data-lang="python">
+<pre>
+question = """And then, what they do?
+Tell me only if you know. Also tell me the source"""
+print(execute_chain(rag_chain, question).content)
+# I don't know.
+</pre>
+</div>
+
+<p>
+  「then」指什么时候？「they」是谁？这条链每次调用都是<strong>全新的开始</strong>，它不知道上一个问题问了什么。
+  要让它听懂追问，得给它加上记忆。
+</p>
+
+<h2 id="memory">对话记忆</h2>
+
+<p>第 1 章说过：所谓记忆，就是<strong>把之前的对话再发一遍</strong>。做法分三步：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 310" role="img" aria-label="带记忆的 RAG：每轮提问时把历史消息放进提示词，回答后把本轮问答追加进历史">
+  <rect class="bx-p" x="20" y="20" width="200" height="270" rx="12"/>
+  <text class="ttl on-p" x="120" y="44" text-anchor="middle">ChatMessageHistory</text>
+  <text class="sm" x="120" y="62" text-anchor="middle">一个不断变长的消息列表</text>
+  <rect class="bx-b" x="36" y="76" width="168" height="34" rx="6"/><text class="sm on-b" x="46" y="97">human: Poseidonia 在哪？</text>
+  <rect class="bx-g" x="36" y="116" width="168" height="34" rx="6"/><text class="sm on-g" x="46" y="137">ai: 在意大利南部……</text>
+  <rect class="bx-b" x="36" y="156" width="168" height="34" rx="6"/><text class="sm on-b" x="46" y="177">human: 然后他们做了什么？</text>
+  <rect class="bx-d" x="36" y="196" width="168" height="34" rx="6"/><text class="sm" x="46" y="217">ai: （本轮回答，稍后写入）</text>
+  <text class="sm" x="120" y="262" text-anchor="middle">③ 每轮结束后追加</text>
+
+  <rect class="bx" x="290" y="20" width="450" height="176" rx="10"/>
+  <text class="ttl" x="304" y="44">② ChatPromptTemplate —— 发给模型的消息列表</text>
+  <rect class="bx-p" x="304" y="56" width="422" height="28" rx="5"/><text class="sm on-p" x="314" y="75">system　你是精通古希腊罗马史的专家……</text>
+  <rect class="bx-d" x="304" y="90" width="422" height="28" rx="5"/><text class="sm" x="314" y="109">placeholder　{chat_history_messages} ← 历史消息整体插在这里</text>
+  <rect class="bx-g" x="304" y="124" width="422" height="28" rx="5"/><text class="sm on-g" x="314" y="143">assistant　{retrieved_context} ← 检索到的资料</text>
+  <rect class="bx-b" x="304" y="158" width="422" height="28" rx="5"/><text class="sm on-b" x="314" y="177">human　{question} ← 本轮问题</text>
+
+  <path class="ln-p" d="M222 104 H300" marker-end="url(#ar-p)"/>
+  <text class="sm on-p" x="261" y="96" text-anchor="middle">① 读取</text>
+
+  <path class="ln" d="M515 198 V224" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="455" y="228" width="120" height="44" rx="8"/><text class="ttl on-a" x="515" y="255" text-anchor="middle">LLM</text>
+  <path class="ln-g" d="M453 250 H330 V213 H208" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="330" y="268" text-anchor="middle">回答写回历史</text>
+</svg>
+<figcaption>图 7-2　带记忆的 RAG：模型每次都能看到完整的来龙去脉</figcaption>
+</figure>
+
+<h3>聊天提示词模板与消息角色</h3>
+
+<p>
+  之前用的 <code>PromptTemplate</code> 生成的是一整段字符串。要表达「这句是系统说的、这句是用户说的」，需要 <code>ChatPromptTemplate</code>，它生成的是<strong>一组带角色的消息</strong>：
+</p>
+
+<div class="tw">
+<table>
+  <tr><th>角色</th><th>含义</th><th>添加历史时用的方法</th></tr>
+  <tr><td><code>system</code></td><td>开发者给模型的总体指示</td><td>—</td></tr>
+  <tr><td><code>human</code> / <code>user</code></td><td>用户说的话</td><td><code>add_user_message()</code></td></tr>
+  <tr><td><code>ai</code> / <code>assistant</code></td><td>模型说的话</td><td><code>add_ai_message()</code></td></tr>
+  <tr><td><code>placeholder</code></td><td>占位：运行时在这里插入<strong>一整串</strong>消息</td><td>—</td></tr>
+</table>
+</div>
+
+<h3>完整实现</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_community.chat_message_histories import ChatMessageHistory
+
+rag_prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful assistant, world-class expert in Roman and Greek "
+               "history, especially in towns located in southern Italy. Provide "
+               "interesting insights on local history and recommend places to visit "
+               "with knowledgeable and engaging answers. Answer all questions to the "
+               "best of your ability, but only use what has been provided in the context. "
+               "If you don't know, just say you don't know."),
+    ("placeholder", "{chat_history_messages}"),
+    ("assistant", "{retrieved_context}"),
+    ("human", "{question}"),
+])
+
+retriever = vector_db.as_retriever()
+chatbot = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-5-nano")
+
+chat_history_memory = ChatMessageHistory()
+
+def get_messages(x):
+    return chat_history_memory.messages
+
+rag_chain = {
+    "retrieved_context": retriever,
+    "question": RunnablePassthrough(),
+    "chat_history_messages": RunnableLambda(get_messages)     # 第三路：读取历史
+} | rag_prompt | chatbot
+
+def execute_chain_with_memory(chain, question):
+    chat_history_memory.add_user_message(question)   # 先记下问题
+    answer = chain.invoke(question)
+    chat_history_memory.add_ai_message(answer)       # 再记下回答
+    return answer
+
+print(execute_chain_with_memory(rag_chain,
+    "Where was Poseidonia and who renamed it to Paestum? Also tell me the source.").content)
+
+print(execute_chain_with_memory(rag_chain,
+    "And then what did they do? Also tell me the source").content)     # 这次能答上来了
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
+import { InMemoryChatMessageHistory } from "@langchain/core/chat_history";
+import { RunnableLambda } from "@langchain/core/runnables";
+
+const ragPrompt = ChatPromptTemplate.fromMessages([
+  ["system", "You are a helpful assistant, world-class expert in Roman and Greek " +
+             "history, especially in towns located in southern Italy. Provide " +
+             "interesting insights on local history and recommend places to visit " +
+             "with knowledgeable and engaging answers. Answer all questions to the " +
+             "best of your ability, but only use what has been provided in the context. " +
+             "If you don't know, just say you don't know."],
+  new MessagesPlaceholder("chat_history_messages"),
+  ["assistant", "{retrieved_context}"],
+  ["human", "{question}"],
+]);
+
+const chatHistoryMemory = new InMemoryChatMessageHistory();
+
+const ragChain = RunnableSequence.from([
+  {
+    retrieved_context: retriever.pipe(formatDocs),
+    question: new RunnablePassthrough(),
+    chat_history_messages: RunnableLambda.from(() =&gt; chatHistoryMemory.getMessages()),
+  },
+  ragPrompt,
+  chatbot,
+]);
+
+async function executeChainWithMemory(question: string) {
+  await chatHistoryMemory.addUserMessage(question);   // 先记下问题
+  const answer = await ragChain.invoke(question);
+  await chatHistoryMemory.addMessage(answer);         // 再记下回答
+  return answer;
+}
+
+console.log((await executeChainWithMemory(
+  "Where was Poseidonia and who renamed it to Paestum? Also tell me the source.")).content);
+
+console.log((await executeChainWithMemory(
+  "And then what did they do? Also tell me the source")).content);     // 这次能答上来了
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+
+interface TourGuide {
+    @SystemMessage("""
+            You are a helpful assistant, world-class expert in Roman and Greek history,
+            especially in towns located in southern Italy. Provide interesting insights
+            on local history and recommend places to visit with knowledgeable and engaging
+            answers. Answer all questions to the best of your ability, but only use what
+            has been provided in the context. If you don't know, just say you don't know.""")
+    String answer(String question);
+}
+
+// 加一行 chatMemory，AI Service 就会自动读写对话历史 ——
+// 「先记问题、再记回答、下次一起发给模型」全部由框架完成。
+TourGuide chatbot = AiServices.builder(TourGuide.class)
+        .chatModel(llm)
+        .contentRetriever(retriever)
+        .chatMemory(MessageWindowChatMemory.withMaxMessages(20))   // 只保留最近 20 条
+        .build();
+
+System.out.println(chatbot.answer(
+        "Where was Poseidonia and who renamed it to Paestum? Also tell me the source."));
+
+System.out.println(chatbot.answer(
+        "And then what did they do? Also tell me the source"));    // 这次能答上来了
+</pre>
+</div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 这种记忆有三个局限</div>
+  <ul>
+    <li><strong>会越来越长</strong>：每轮都把全部历史发出去，token 费用线性增长，迟早撑爆上下文窗口。生产环境要截断（只留最近 N 轮）或把旧对话压缩成摘要。Java 版的 <code>MessageWindowChatMemory</code> 做的就是截断。</li>
+    <li><strong>检索没用上历史</strong>：这里拿去检索的仍然是原始问题「然后他们做了什么？」，它本身几乎没有可检索的信息。改进办法是先让 LLM 结合历史把它改写成完整的问题 —— 第 9 章的内容。</li>
+    <li><strong>只活在内存里</strong>：程序一重启就没了，而且所有用户共用一份。第 14 章用 LangGraph 的检查点解决。</li>
+  </ul>
+</div>
+
+<h2 id="langsmith">用 LangSmith 看清链的内部</h2>
+
+<p>
+  链一长，出了问题就像黑盒：到底检索到了什么？最终发给模型的提示词长什么样？哪一步最慢、最费钱？
+  <strong>LangSmith</strong> 是 LangChain 官方的追踪平台，能把每次运行的每一步都记录下来。
+</p>
+
+<h3>开启追踪：只需要环境变量</h3>
+
+<p>在 <a href="https://smith.langchain.com">smith.langchain.com</a> 注册并创建 API Key，然后在启动程序<strong>之前</strong>设置：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+# 在终端里设置，然后再启动 Jupyter 或运行脚本 —— 代码一行都不用改
+#
+#   export LANGSMITH_TRACING=true
+#   export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+#   export LANGSMITH_PROJECT="Q &amp; A chatbot"
+#   export LANGSMITH_API_KEY=&lt;你的 LangSmith API Key&gt;
+#
+# Windows 的 cmd 里把 export 换成 set
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// LangChain.js 读取的是同一组环境变量，同样不用改代码：
+//
+//   export LANGSMITH_TRACING=true
+//   export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+//   export LANGSMITH_PROJECT="Q &amp; A chatbot"
+//   export LANGSMITH_API_KEY=&lt;你的 LangSmith API Key&gt;
+//
+// 也可以写进 .env，再在入口文件顶部 import "dotenv/config";
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// LangSmith 没有针对 LangChain4j 的一键集成。Java 里的等价做法是注册「监听器」，
+// 把每次模型调用的请求、响应、耗时、token 用量记录下来（或上报给 OpenTelemetry / Langfuse）。
+import dev.langchain4j.model.chat.listener.*;
+
+class TracingListener implements ChatModelListener {
+    @Override public void onRequest(ChatModelRequestContext ctx) {
+        System.out.println("&gt;&gt;&gt; " + ctx.chatRequest().messages());
+    }
+    @Override public void onResponse(ChatModelResponseContext ctx) {
+        System.out.println("&lt;&lt;&lt; " + ctx.chatResponse().aiMessage().text());
+        System.out.println("    tokens: " + ctx.chatResponse().tokenUsage());
+    }
+    @Override public void onError(ChatModelErrorContext ctx) {
+        ctx.error().printStackTrace();
+    }
+}
+
+var llm = OpenAiChatModel.builder()
+        .apiKey(System.getenv("OPENAI_API_KEY")).modelName("gpt-5-nano")
+        .listeners(List.of(new TracingListener()))
+        .build();
+</pre>
+</div>
+</div>
+
+<h3>一条追踪记录里能看到什么</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="LangSmith 追踪视图示意：左侧是步骤树，右侧是选中步骤的输入输出、耗时和 token 用量">
+  <rect class="bx" x="14" y="14" width="330" height="242" rx="10"/>
+  <text class="ttl" x="28" y="38">运行树（每一步都能点开）</text>
+  <rect class="bx-a" x="28" y="52" width="302" height="30" rx="6"/><text class="mono on-a" x="38" y="72">RunnableSequence　　　　3.2s</text>
+  <rect class="bx" x="48" y="88" width="282" height="28" rx="6"/><text class="mono" x="58" y="107">RunnableParallel　　　0.6s</text>
+  <rect class="bx-p" x="68" y="121" width="262" height="26" rx="6"/><text class="mono on-p" x="78" y="139">Retriever　　　　　0.6s</text>
+  <rect class="bx" x="68" y="151" width="262" height="26" rx="6"/><text class="mono" x="78" y="169">RunnablePassthrough</text>
+  <rect class="bx-g" x="48" y="182" width="282" height="28" rx="6"/><text class="mono on-g" x="58" y="201">ChatPromptTemplate</text>
+  <rect class="bx-b" x="48" y="215" width="282" height="28" rx="6"/><text class="mono on-b" x="58" y="234">ChatOpenAI　　　　　2.5s</text>
+
+  <rect class="bx" x="364" y="14" width="382" height="242" rx="10"/>
+  <text class="ttl" x="378" y="38">选中 Retriever 这一步</text>
+  <text class="sm" x="378" y="62">输入 Input</text>
+  <rect class="bx-d" x="378" y="68" width="354" height="28" rx="5"/><text class="mono" x="388" y="87">"Where was Poseidonia and who ..."</text>
+  <text class="sm" x="378" y="118">输出 Output —— 检索到的 4 个文本块</text>
+  <rect class="bx-d" x="378" y="124" width="354" height="62" rx="5"/>
+  <text class="mono" x="388" y="143">[1] Paestum-Britannica.docx ...</text>
+  <text class="mono" x="388" y="160">[2] wikipedia/Paestum ...</text>
+  <text class="mono" x="388" y="177">[3] PaestumRevisited.pdf p.2 ...</text>
+  <text class="sm" x="378" y="210">选中 ChatOpenAI 时还能看到：</text>
+  <text class="sm" x="378" y="228">· 最终发给模型的完整提示词　· 输入 / 输出 token 数</text>
+  <text class="sm" x="378" y="246">· 估算费用　· 首个 token 延迟</text>
+</svg>
+<figcaption>图 7-3　LangSmith 把黑盒变成了可以逐层点开的树</figcaption>
+</figure>
+
+<p>排查 RAG 问题时，最常用的两个检查点：</p>
+<ol>
+  <li><strong>点开 Retriever</strong>：检索回来的文本块里有没有答案？没有 → 是入库或检索的问题（第 8、9 章）。</li>
+  <li><strong>点开 ChatOpenAI</strong>：资料明明在提示词里，模型却没用上？→ 是提示词的问题。</li>
+</ol>
+
+<div class="box tip">
+  <div class="t">&#128161; 开发阶段就一直开着</div>
+  <p>
+    追踪不是出了事故才用的东西。LangSmith 有免费额度，开发时始终开着它，能省下大量加 <code>print</code> 语句的时间。
+    到了智能体章节（第 11 章起），执行路径是动态的，没有追踪几乎无法调试。
+  </p>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>入库阶段的对象：<strong>Loader → Splitter → Embeddings → VectorStore</strong>；问答阶段：<strong>Retriever → PromptTemplate → ChatModel</strong>。</li>
+  <li>不同格式的文档用不同加载器，但加载后的处理完全一样，所以可以提炼成通用函数和加载器工厂。</li>
+  <li><code>vector_db.as_retriever()</code> 把向量库变成可以接进链里的检索器。</li>
+  <li>RAG 链的开头用一个字典把问题分成两路：一路去检索，一路原样通过。</li>
+  <li>对话记忆 = 把历史消息放进提示词。用 <code>ChatPromptTemplate</code> 的占位符插入，用消息历史对象保存。</li>
+  <li>LangSmith 通过环境变量开启，能看到链中每一步的输入、输出、耗时和 token 用量。</li>
+  <li>调试 RAG：<strong>先看检索，再看生成</strong>。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>把 <code>CilentoTouristInfo</code> 文件夹入库，然后问一个只有这些文件才能回答的问题（比如关于帕利努罗角）。</li>
+    <li>不加记忆时连问两个问题，确认第二个追问失败；加上记忆后重试。</li>
+    <li>开启 LangSmith，找到追问那次运行，看看发给模型的完整消息列表里历史消息在什么位置。</li>
+    <li>把 <code>chunk_size</code> 从 500 改成 2000 重新入库，同一个问题的回答有何变化？LangSmith 里的 token 用量呢？</li>
+    <li>给记忆加一个上限：只保留最近 6 条消息。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

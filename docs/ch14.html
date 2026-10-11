@@ -1,0 +1,834 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 14 章 · 走向生产：记忆与护栏 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="14">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 14 章</span>
+<h1>走向生产：记忆与护栏</h1>
+<p class="lede">
+  我们的旅行助手已经很能干了，但离「敢给真实用户用」还差两样东西：
+  它<strong>记不住</strong>上一句话说了什么，也<strong>管不住</strong>自己 —— 你问它怎么炒股，它也会认真作答。
+  这一章补上记忆和护栏，然后看看通往生产的路上还有哪些功课。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>分清短期记忆和长期记忆</li>
+    <li>用 LangGraph 的检查点（checkpointer）和 <code>thread_id</code> 实现多轮对话</li>
+    <li>查看状态历史，并把对话「倒带」到过去的某个时刻</li>
+    <li>在路由层和智能体层分别加上输入护栏</li>
+    <li>了解上线前还需要考虑的事：长期记忆、人工介入、输出护栏、评估、部署</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="memory-types">记忆的种类</h2>
+
+<div class="tw">
+<table>
+  <tr><th>记忆类型</th><th>范围</th><th>保存多久</th><th>旅行助手的例子</th><th>难点</th></tr>
+  <tr><td><strong>短期记忆</strong></td><td>一个用户的一次会话</td><td>会话结束为止</td><td>追问天气时记得「同一个镇」指哪儿</td><td>会话一关就没了</td></tr>
+  <tr><td><strong>长期记忆（用户级）</strong></td><td>一个用户的多次会话</td><td>几周、几个月、几年</td><td>记得用户偏爱的目的地和住宿类型</td><td>隐私合规；管理持久化的数据</td></tr>
+  <tr><td><strong>长期记忆（应用级）</strong></td><td>所有用户、所有会话</td><td>持续存在</td><td>康沃尔的活动日历、景点的季节性开放时间</td><td>保持数据新鲜，避免过时或错误的信息</td></tr>
+</table>
+</div>
+
+<p>本章实现<strong>短期记忆</strong>。先看没有它时会怎样：</p>
+
+<div class="code" data-lang="text" data-file="第 12 章的路由器版助手">
+<pre>
+You: What's the weather like in Penzance?
+Assistant: It's sunny and 24°C in Penzance.
+
+You: Are there any hotels available in the same town?
+Assistant: Could you tell me which town you mean?        ← 它已经不记得 Penzance 了
+</pre>
+</div>
+
+<p>
+  原因在聊天循环里：每一轮都用一个<strong>只含当前这句话</strong>的全新状态去调用图。上一轮的消息列表在 <code>invoke</code> 返回后就被丢掉了。
+</p>
+
+<h2 id="checkpoint">检查点：让图记住状态</h2>
+
+<p>
+  第 7 章我们手动维护过一个消息历史对象。LangGraph 有更系统的做法：<strong>检查点</strong>（checkpoint）。
+  给图配一个<strong>检查点保存器</strong>（checkpointer）后，图每执行完一步，就自动把<strong>完整的状态</strong>存一份快照。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 310" role="img" aria-label="检查点机制：图每执行一步保存一个状态快照，快照按 thread_id 分组；下次用同一 thread_id 调用时从最新快照继续">
+  <text class="ttl" x="20" y="26">thread_id = "abc"（一次会话 = 一条线程）</text>
+  <rect class="bx" x="20" y="44" width="120" height="50" rx="8"/><text class="sm" x="80" y="64" text-anchor="middle">第 1 轮输入</text><text class="sm" x="80" y="82" text-anchor="middle">「Penzance 天气？」</text>
+  <rect class="bx-a" x="170" y="44" width="92" height="50" rx="8"/><text class="mono on-a" x="216" y="74" text-anchor="middle">router</text>
+  <rect class="bx-g" x="292" y="44" width="110" height="50" rx="8"/><text class="mono on-g" x="347" y="74" text-anchor="middle">travel_info</text>
+  <path class="ln" d="M142 69 H166" marker-end="url(#ar)"/><path class="ln" d="M264 69 H288" marker-end="url(#ar)"/>
+
+  <rect class="bx" x="440" y="44" width="120" height="50" rx="8"/><text class="sm" x="500" y="64" text-anchor="middle">第 2 轮输入</text><text class="sm" x="500" y="82" text-anchor="middle">「那里有酒店吗？」</text>
+  <rect class="bx-a" x="586" y="44" width="70" height="50" rx="8"/><text class="mono on-a" x="621" y="74" text-anchor="middle">router</text>
+  <rect class="bx-b" x="676" y="44" width="70" height="50" rx="8"/><text class="mono on-b" x="711" y="74" text-anchor="middle">booking</text>
+  <path class="ln" d="M562 69 H582" marker-end="url(#ar)"/><path class="ln" d="M658 69 H672" marker-end="url(#ar)"/>
+
+  <path class="ln-p" d="M80 96 V130" marker-end="url(#ar-p)"/><path class="ln-p" d="M216 96 V130" marker-end="url(#ar-p)"/><path class="ln-p" d="M347 96 V130" marker-end="url(#ar-p)"/>
+  <path class="ln-p" d="M500 96 V130" marker-end="url(#ar-p)"/><path class="ln-p" d="M621 96 V130" marker-end="url(#ar-p)"/><path class="ln-p" d="M711 96 V130" marker-end="url(#ar-p)"/>
+
+  <rect class="bx-p" x="20" y="134" width="726" height="82" rx="10"/>
+  <text class="ttl on-p" x="34" y="156">检查点保存器 Checkpointer（内存 / SQLite / Postgres）</text>
+  <rect class="bx" x="34" y="166" width="92" height="38" rx="5"/><text class="sm" x="80" y="182" text-anchor="middle">快照 1</text><text class="sm" x="80" y="197" text-anchor="middle">1 条消息</text>
+  <rect class="bx" x="170" y="166" width="92" height="38" rx="5"/><text class="sm" x="216" y="182" text-anchor="middle">快照 2</text><text class="sm" x="216" y="197" text-anchor="middle">1 条消息</text>
+  <rect class="bx" x="300" y="166" width="96" height="38" rx="5"/><text class="sm" x="348" y="182" text-anchor="middle">快照 3</text><text class="sm" x="348" y="197" text-anchor="middle">4 条消息</text>
+  <rect class="bx" x="454" y="166" width="92" height="38" rx="5"/><text class="sm" x="500" y="182" text-anchor="middle">快照 4</text><text class="sm" x="500" y="197" text-anchor="middle">5 条消息</text>
+  <rect class="bx" x="576" y="166" width="72" height="38" rx="5"/><text class="sm" x="612" y="182" text-anchor="middle">快照 5</text><text class="sm" x="612" y="197" text-anchor="middle">5 条</text>
+  <rect class="bx" x="666" y="166" width="72" height="38" rx="5"/><text class="sm" x="702" y="182" text-anchor="middle">快照 6</text><text class="sm" x="702" y="197" text-anchor="middle">9 条</text>
+
+  <path class="ln-g" d="M348 206 V228" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="170" y="232" width="226" height="64" rx="8"/>
+  <text class="sm on-g" x="283" y="252" text-anchor="middle">第 2 轮开始时：按 thread_id 取出最新快照，</text>
+  <text class="sm on-g" x="283" y="268" text-anchor="middle">把新消息追加上去 → 模型看得到</text>
+  <text class="sm on-g" x="283" y="284" text-anchor="middle">第 1 轮里的「Penzance」</text>
+  <text class="sm" x="590" y="262" text-anchor="middle">不同的 thread_id</text><text class="sm" x="590" y="278" text-anchor="middle">= 互不相干的另一场对话</text>
+</svg>
+<figcaption>图 14-1　检查点 = 自动存档；thread_id = 存档槽位</figcaption>
+</figure>
+
+<p>两个关键概念：</p>
+<ul>
+  <li><strong>线程（thread）</strong>：一场连续的对话，用 <code>thread_id</code> 标识。同一个 <code>thread_id</code> 的多次调用共享状态；不同的 <code>thread_id</code> 完全隔离 —— 所以它天然支持多用户。</li>
+  <li><strong>检查点（checkpoint）</strong>：某一步执行完后的状态快照。一个线程里有一串按时间排列的检查点。</li>
+</ul>
+
+<h3>给旅行助手加上短期记忆</h3>
+
+<p>只需要改三处。对应仓库的 <code>ch11/main_08_01.py</code>：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_08_01.py（改动部分）">
+<pre>
+import uuid
+from langgraph.checkpoint.memory import InMemorySaver
+
+# ① 编译图时配上检查点保存器
+checkpointer = InMemorySaver()                       # 存在内存里；进程重启就没了
+travel_assistant = graph.compile(checkpointer=checkpointer)
+
+def chat_loop():
+    # ② 每场对话生成一个 thread_id
+    thread_id = uuid.uuid1()
+    config = {"configurable": {"thread_id": thread_id}}
+    print(f"Thread ID: {thread_id}")
+
+    print("UK Travel Assistant (type 'exit' to quit)")
+    while True:
+        user_input = input("You: ").strip()
+        if user_input.lower() in {"exit", "quit"}:
+            break
+        # 仍然只传「这一轮的新消息」——历史由检查点负责补上
+        state = {"messages": [HumanMessage(content=user_input)]}
+        # ③ 调用时带上 config
+        result = travel_assistant.invoke(state, config=config)
+        print(f"Assistant: {result['messages'][-1].content}\n")
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="memory.ts">
+<pre>
+import { MemorySaver } from "@langchain/langgraph";
+import { randomUUID } from "node:crypto";
+import * as readline from "node:readline/promises";
+
+// ① 编译图时配上检查点保存器
+const checkpointer = new MemorySaver();               // 存在内存里；进程重启就没了
+const travelAssistant = graphBuilder.compile({ checkpointer });
+
+async function chatLoop() {
+  // ② 每场对话生成一个 thread_id
+  const config = { configurable: { thread_id: randomUUID() } };
+  console.log(`Thread ID: ${config.configurable.thread_id}`);
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  while (true) {
+    const userInput = (await rl.question("You: ")).trim();
+    if (["exit", "quit"].includes(userInput.toLowerCase())) break;
+    // 仍然只传「这一轮的新消息」——历史由检查点负责补上
+    const result = await travelAssistant.invoke(
+      { messages: [new HumanMessage(userInput)] },
+      config);                                        // ③ 调用时带上 config
+    console.log(`Assistant: ${result.messages.at(-1)?.content}\n`);
+  }
+  rl.close();
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Memory.java">
+<pre>
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.service.MemoryId;
+
+// LangChain4j 的对应概念：@MemoryId 相当于 thread_id，ChatMemoryProvider 为每个 id 提供独立的记忆。
+interface TravelAssistant {
+    @SystemMessage("You are a helpful travel assistant for Cornwall ...")
+    String chat(@MemoryId String threadId, @UserMessage String userMessage);
+}
+
+TravelAssistant travelAssistant = AiServices.builder(TravelAssistant.class)
+        .chatModel(llm)
+        .tools(new TravelTools(kb), new BookingTools())
+        // ① 每个 threadId 一份独立的记忆，各保留最近 30 条消息
+        .chatMemoryProvider(threadId -&gt; MessageWindowChatMemory.withMaxMessages(30))
+        .build();
+
+// ② 每场对话生成一个 threadId
+String threadId = UUID.randomUUID().toString();
+
+var scanner = new Scanner(System.in);
+while (true) {
+    System.out.print("You: ");
+    String userInput = scanner.nextLine().trim();
+    if (userInput.equalsIgnoreCase("exit")) break;
+    // ③ 调用时带上 threadId
+    System.out.println("Assistant: " + travelAssistant.chat(threadId, userInput) + "\n");
+}
+
+// 如果你用 LangGraph4j 构建图，写法和 Python 几乎一一对应：
+//   var saver = new MemorySaver();
+//   var app = graph.compile(CompileConfig.builder().checkpointSaver(saver).build());
+//   app.invoke(input, RunnableConfig.builder().threadId(threadId).build());
+</pre>
+</div>
+</div>
+
+<p>再试一次：</p>
+
+<div class="code" data-lang="text">
+<pre>
+You: What's the weather like in Penzance?
+Assistant: It's sunny and 24°C in Penzance.
+
+You: Are there any hotels available in the same town?
+Assistant: Yes — in Penzance there are rooms at ...       ← 记住了
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 为什么这次的状态能跨智能体共享</div>
+  <p>
+    第一轮走的是旅行信息智能体，第二轮走的是住宿预订智能体 —— 两个不同的子图。
+    但它们读写的是<strong>同一个父图状态</strong>里的 <code>messages</code>，而检查点保存的正是这份状态。
+    所以预订智能体能看到信息智能体之前说过的话。
+  </p>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; InMemorySaver 只适合开发</div>
+  <p>
+    它把快照存在进程内存里：重启即丢失，也无法在多个服务实例之间共享。
+    生产环境换成持久化的保存器 —— <code>SqliteSaver</code>（单机）或 <code>PostgresSaver</code>（多实例）。
+    接口完全一样，只改初始化那一行。另外，消息只增不减，长对话需要裁剪或摘要（第 7 章讨论过）。
+  </p>
+</div>
+
+<h3>时间旅行：查看历史，倒带重放</h3>
+
+<p>
+  既然每一步都有快照，就能做一些很有用的事：<strong>查看</strong>任意时刻的完整状态（调试利器），
+  或者从过去的某个检查点<strong>重新执行</strong>。对应仓库的 <code>main_08_02.py</code>：
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_08_02.py（节选）">
+<pre>
+config = {"configurable": {"thread_id": thread_id}}
+result = travel_assistant.invoke(
+    {"messages": [HumanMessage(content=user_input)]}, config=config)
+
+# 取出这条线程的全部快照（最新的排在最前）
+state_history_list = list(travel_assistant.get_state_history(config))
+for snapshot in state_history_list:
+    print(snapshot.config["configurable"]["checkpoint_id"],
+          "| 下一步:", snapshot.next,
+          "| 消息数:", len(snapshot.values.get("messages", [])))
+
+# 选一个过去的检查点（这里取最新的那个作演示）
+chosen = state_history_list[0]
+new_config = {"configurable": {
+    "thread_id": chosen.config["configurable"]["thread_id"],
+    "checkpoint_id": chosen.config["configurable"]["checkpoint_id"]}}
+
+# 查看那个时刻的完整状态
+retrieved_snapshot = travel_assistant.get_state(new_config)
+print(retrieved_snapshot.values)
+
+# 从那个检查点继续执行：输入传 None，表示「不加新输入，接着往下跑」
+travel_assistant.invoke(None, config=new_config)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="timeTravel.ts">
+<pre>
+const config = { configurable: { thread_id: threadId } };
+await travelAssistant.invoke({ messages: [new HumanMessage(userInput)] }, config);
+
+// 取出这条线程的全部快照（最新的排在最前）
+const stateHistory = [];
+for await (const snapshot of travelAssistant.getStateHistory(config)) {
+  stateHistory.push(snapshot);
+  console.log(snapshot.config.configurable?.checkpoint_id,
+    "| 下一步:", snapshot.next,
+    "| 消息数:", snapshot.values.messages?.length ?? 0);
+}
+
+// 选一个过去的检查点（这里取最新的那个作演示）
+const chosen = stateHistory[0];
+const newConfig = { configurable: {
+  thread_id: chosen.config.configurable?.thread_id,
+  checkpoint_id: chosen.config.configurable?.checkpoint_id } };
+
+// 查看那个时刻的完整状态
+const retrievedSnapshot = await travelAssistant.getState(newConfig);
+console.log(retrievedSnapshot.values);
+
+// 从那个检查点继续执行：输入传 null，表示「不加新输入，接着往下跑」
+await travelAssistant.invoke(null, newConfig);
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="LangGraph4j">
+<pre>
+// 时间旅行是「图 + 检查点」才有的能力，这里用 LangGraph4j 演示。
+var config = RunnableConfig.builder().threadId(threadId).build();
+app.invoke(Map.of("messages", UserMessage.from(userInput)), config);
+
+// 取出这条线程的全部快照（最新的排在最前）
+var history = new ArrayList&lt;&gt;(app.getStateHistory(config));
+for (var snapshot : history) {
+    System.out.println(snapshot.config().checkPointId().orElse("-")
+            + " | 下一步: " + snapshot.next());
+}
+
+// 选一个过去的检查点，查看当时的状态
+var chosen = history.get(0);
+System.out.println(app.getState(chosen.config()).state().data());
+
+// 从那个检查点继续执行：输入传 null
+app.invoke(null, chosen.config());
+</pre>
+</div>
+</div>
+
+<p>时间旅行有什么用？</p>
+<div class="cards">
+  <div class="card"><span class="ic">&#128027;</span><h4>调试</h4><p>智能体在第 5 步走偏了？直接查看第 4 步结束时的状态，而不用把整个对话重跑一遍。</p></div>
+  <div class="card"><span class="ic">&#128256;</span><h4>分叉重试</h4><p>回到某个检查点，修改状态（比如换个说法），从那里走出一条新的分支，对比两种结果。</p></div>
+  <div class="card"><span class="ic">&#9208;</span><h4>断点续跑</h4><p>图执行到一半被中断（崩溃，或在等人工审批），可以从最后一个检查点恢复，而不是从头来过。</p></div>
+</div>
+
+<h2 id="guardrails">护栏：让助手待在该待的地方</h2>
+
+<p>
+  不加约束的助手什么都会答：写代码、给医疗建议、评论政治。这既浪费钱，也可能带来法律和品牌风险。
+  <strong>护栏</strong>（guardrails）是在模型周围设置的检查点，把不该处理的请求拦下来，把不该输出的内容挡回去。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="护栏的位置：输入护栏在调用模型之前检查用户请求，输出护栏在返回用户之前检查模型回答">
+  <rect class="bx" x="20" y="60" width="90" height="50" rx="8"/><text class="lbl" x="65" y="90" text-anchor="middle">用户输入</text>
+  <rect class="bx-r" x="150" y="46" width="150" height="78" rx="10"/>
+  <text class="ttl on-r" x="225" y="72" text-anchor="middle">输入护栏</text>
+  <text class="sm" x="225" y="92" text-anchor="middle">话题范围、恶意指令、</text><text class="sm" x="225" y="108" text-anchor="middle">敏感信息</text>
+  <rect class="bx-a" x="340" y="46" width="130" height="78" rx="10"/>
+  <text class="ttl on-a" x="405" y="80" text-anchor="middle">智能体</text><text class="sm" x="405" y="100" text-anchor="middle">LLM + 工具</text>
+  <rect class="bx-r" x="510" y="46" width="150" height="78" rx="10"/>
+  <text class="ttl on-r" x="585" y="72" text-anchor="middle">输出护栏</text>
+  <text class="sm" x="585" y="92" text-anchor="middle">事实、语气、格式、</text><text class="sm" x="585" y="108" text-anchor="middle">隐私脱敏</text>
+  <rect class="bx" x="690" y="60" width="56" height="50" rx="8"/><text class="lbl" x="718" y="90" text-anchor="middle">用户</text>
+  <path class="ln" d="M112 85 H146" marker-end="url(#ar)"/><path class="ln" d="M302 85 H336" marker-end="url(#ar)"/>
+  <path class="ln" d="M472 85 H506" marker-end="url(#ar)"/><path class="ln" d="M662 85 H686" marker-end="url(#ar)"/>
+  <path class="ln-r" d="M225 126 V150 H718 V114" marker-end="url(#ar-r)"/>
+  <text class="sm on-r" x="470" y="144" text-anchor="middle">不合规 → 直接拒绝，根本不进入智能体</text>
+  <text class="sm" x="225" y="30" text-anchor="middle">本章实现</text><text class="sm" x="585" y="30" text-anchor="middle">见「后续功课」</text>
+</svg>
+<figcaption>图 14-2　护栏在模型的前后两侧</figcaption>
+</figure>
+
+<p>我们在两个层级各加一道输入护栏：</p>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>第一道：路由层</th><th>第二道：智能体层</th></tr>
+  <tr><td>规则</td><td>只接受<strong>旅行相关</strong>的问题</td><td>只接受关于<strong>康沃尔</strong>的旅行问题</td></tr>
+  <tr><td>位置</td><td>路由节点里，分发之前</td><td>每个 ReAct 智能体内部，每次调用模型之前</td></tr>
+  <tr><td>拦下后</td><td>直接返回固定的拒绝语，跳到 END</td><td>给模型注入一条「请礼貌拒绝」的指令</td></tr>
+  <tr><td>拦什么</td><td>「帮我写个排序算法」</td><td>「巴黎有什么好玩的？」</td></tr>
+</table>
+</div>
+
+<h3>第一道：路由层护栏</h3>
+
+<p>用一个<strong>分类器</strong>（就是一次带结构化输出的 LLM 调用）判断问题是否与旅行有关。不相关就走一条新的「快速出口」：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="加入护栏后的路由图：路由节点先做护栏分类，不相关的请求进入 guardrail_refusal 节点后直接结束">
+  <rect class="bx" x="14" y="88" width="76" height="40" rx="20"/><text class="lbl" x="52" y="113" text-anchor="middle">START</text>
+  <rect class="bx-a" x="130" y="56" width="200" height="104" rx="12"/>
+  <text class="mono on-a" x="230" y="80" text-anchor="middle">router_agent</text>
+  <rect class="bx-r" x="144" y="90" width="172" height="26" rx="5"/><text class="sm on-r" x="230" y="108" text-anchor="middle">① 护栏：是旅行问题吗？</text>
+  <rect class="bx" x="144" y="122" width="172" height="26" rx="5"/><text class="sm" x="230" y="140" text-anchor="middle">② 路由：交给哪个智能体？</text>
+  <rect class="bx-r" x="430" y="10" width="200" height="44" rx="10"/><text class="mono on-r" x="530" y="37" text-anchor="middle">guardrail_refusal</text>
+  <rect class="bx-g" x="430" y="86" width="200" height="44" rx="10"/><text class="mono on-g" x="530" y="113" text-anchor="middle">travel_info_agent</text>
+  <rect class="bx-b" x="430" y="162" width="200" height="44" rx="10"/><text class="mono on-b" x="530" y="189" text-anchor="middle" style="font-size:11px">accommodation_booking_agent</text>
+  <rect class="bx" x="676" y="88" width="70" height="40" rx="20"/><text class="lbl" x="711" y="113" text-anchor="middle">END</text>
+  <path class="ln" d="M92 108 H126" marker-end="url(#ar)"/>
+  <path class="ln-r" d="M332 84 L426 40" marker-end="url(#ar-r)"/><text class="sm on-r" x="364" y="48" text-anchor="middle">不相关</text>
+  <path class="ln" d="M332 108 H426" marker-end="url(#ar)"/><path class="ln" d="M332 136 L426 180" marker-end="url(#ar)"/>
+  <path class="ln" d="M632 34 L682 86" marker-end="url(#ar)"/><path class="ln" d="M632 108 H672" marker-end="url(#ar)"/><path class="ln" d="M632 182 L682 130" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 14-3　不相关的问题在最前面就被拦下，不消耗后面任何资源</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_09_01.py（节选）">
+<pre>
+from langchain_core.messages import AIMessage
+
+class GuardrailDecision(BaseModel):
+    is_travel: bool = Field(..., description=(
+        "True if the user question is about travel information: destinations, attractions, "
+        "lodging (hotels/BnBs), prices, availability, or weather in Cornwall/England."))
+    reason: str = Field(..., description="Brief justification for the decision.")
+
+GUARDRAIL_SYSTEM_PROMPT = (
+    "You are a strict classifier. Given the user's last message, respond with whether it is "
+    "travel-related. Travel-related queries include destinations, attractions, lodging "
+    "(hotels/BnBs), room availability, prices, or weather in Cornwall/England.")
+
+llm_guardrail = llm_model.with_structured_output(GuardrailDecision)
+
+def router_agent_node(state: AgentState) -&gt; Command:
+    last_msg = state["messages"][-1] if state["messages"] else None
+    if isinstance(last_msg, HumanMessage):
+        user_input = last_msg.content
+
+        # ① 护栏：先判断是不是旅行相关
+        decision = llm_guardrail.invoke([
+            SystemMessage(content=GUARDRAIL_SYSTEM_PROMPT),
+            HumanMessage(content=user_input)])
+
+        if not decision.is_travel:
+            refusal_text = (
+                "Sorry, I can only help with travel-related questions (destinations, "
+                "attractions, lodging, prices, availability, or weather in Cornwall/England). "
+                "Please rephrase your request to be travel-related.")
+            return Command(                                      # 写入拒绝语，跳到快速出口
+                update={"messages": [AIMessage(content=refusal_text)]},
+                goto="guardrail_refusal")
+
+        # ② 通过护栏后，照常路由
+        router_response = llm_router.invoke([
+            SystemMessage(content=ROUTER_SYSTEM_PROMPT),
+            HumanMessage(content=user_input)])
+        return Command(goto=router_response.agent.value)
+
+    return Command(goto=AgentType.travel_info_agent.value)
+
+def guardrail_refusal_node(state: AgentState):
+    return {}               # 空节点：拒绝语已经由路由节点写进状态，这里只是通往 END 的落脚点
+
+graph = StateGraph(AgentState)
+graph.add_node("router_agent", router_agent_node)
+graph.add_node("travel_info_agent", travel_info_agent)
+graph.add_node("accommodation_booking_agent", accommodation_booking_agent)
+graph.add_node("guardrail_refusal", guardrail_refusal_node)       # 新节点
+graph.add_edge("travel_info_agent", END)
+graph.add_edge("accommodation_booking_agent", END)
+graph.add_edge("guardrail_refusal", END)                          # 新边
+graph.set_entry_point("router_agent")
+travel_assistant = graph.compile(checkpointer=InMemorySaver())
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="guardrailRouter.ts">
+<pre>
+import { AIMessage } from "@langchain/core/messages";
+
+const GuardrailDecision = z.object({
+  is_travel: z.boolean().describe(
+    "True if the user question is about travel information: destinations, attractions, " +
+    "lodging (hotels/BnBs), prices, availability, or weather in Cornwall/England."),
+  reason: z.string().describe("Brief justification for the decision."),
+});
+
+const GUARDRAIL_SYSTEM_PROMPT =
+  "You are a strict classifier. Given the user's last message, respond with whether it is " +
+  "travel-related. Travel-related queries include destinations, attractions, lodging " +
+  "(hotels/BnBs), room availability, prices, or weather in Cornwall/England.";
+
+const llmGuardrail = llmModel.withStructuredOutput(GuardrailDecision);
+
+async function routerAgentNode(state: typeof MessagesAnnotation.State) {
+  const lastMsg = state.messages.at(-1);
+  if (!(lastMsg instanceof HumanMessage)) return new Command({ goto: "travel_info_agent" });
+  const userInput = lastMsg.content as string;
+
+  // ① 护栏：先判断是不是旅行相关
+  const decision = await llmGuardrail.invoke([
+    new SystemMessage(GUARDRAIL_SYSTEM_PROMPT), new HumanMessage(userInput)]);
+
+  if (!decision.is_travel) {
+    return new Command({                                       // 写入拒绝语，跳到快速出口
+      update: { messages: [new AIMessage(
+        "Sorry, I can only help with travel-related questions (destinations, attractions, " +
+        "lodging, prices, availability, or weather in Cornwall/England). " +
+        "Please rephrase your request to be travel-related.")] },
+      goto: "guardrail_refusal",
+    });
+  }
+
+  // ② 通过护栏后，照常路由
+  const { agent } = await llmRouter.invoke([
+    new SystemMessage(ROUTER_SYSTEM_PROMPT), new HumanMessage(userInput)]);
+  return new Command({ goto: agent });
+}
+
+const travelAssistant = new StateGraph(MessagesAnnotation)
+  .addNode("router_agent", routerAgentNode,
+    { ends: ["travel_info_agent", "accommodation_booking_agent", "guardrail_refusal"] })
+  .addNode("travel_info_agent", travelInfoAgent)
+  .addNode("accommodation_booking_agent", accommodationBookingAgent)
+  .addNode("guardrail_refusal", () =&gt; ({}))                    // 空节点：通往 END 的落脚点
+  .addEdge(START, "router_agent")
+  .addEdge("travel_info_agent", END)
+  .addEdge("accommodation_booking_agent", END)
+  .addEdge("guardrail_refusal", END)
+  .compile({ checkpointer: new MemorySaver() });
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="GuardedRouterAssistant.java">
+<pre>
+record GuardrailDecision(
+        @Description("True if the user question is about travel information: destinations, "
+                + "attractions, lodging (hotels/BnBs), prices, availability, or weather in Cornwall/England.")
+        boolean isTravel,
+        @Description("Brief justification for the decision.") String reason) {}
+
+interface Guardrail {
+    @SystemMessage("""
+            You are a strict classifier. Given the user's last message, respond with whether
+            it is travel-related. Travel-related queries include destinations, attractions,
+            lodging (hotels/BnBs), room availability, prices, or weather in Cornwall/England.""")
+    GuardrailDecision check(String userMessage);
+}
+
+class GuardedRouterAssistant {
+    private static final String REFUSAL = """
+            Sorry, I can only help with travel-related questions (destinations, attractions,
+            lodging, prices, availability, or weather in Cornwall/England).
+            Please rephrase your request to be travel-related.""";
+
+    private final Guardrail guardrail;
+    private final RouterAssistant router;      // 第 12 章的路由器
+
+    String chat(String userMessage) {
+        // ① 护栏：不相关就直接返回拒绝语，后面的一切都不执行
+        if (!guardrail.check(userMessage).isTravel()) {
+            return REFUSAL;
+        }
+        // ② 通过护栏后，照常路由
+        return router.chat(userMessage);
+    }
+}
+
+// 提示：LangChain4j 也提供了声明式的护栏 —— 实现 InputGuardrail 接口，
+// 再用 @InputGuardrails 注解挂到 AI Service 的方法上，效果相同。
+</pre>
+</div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 拒绝语用固定文本，而不是让模型生成</div>
+  <p>
+    被拦下的请求直接返回一段<strong>写死的</strong>拒绝语：零成本、零延迟、措辞完全可控。
+    更重要的是，可疑的输入根本没有机会进入主模型 —— 这也是防御提示词注入的基本思路。
+  </p>
+</div>
+
+<h3>第二道：智能体层护栏</h3>
+
+<p>
+  路由层的规则是「旅行相关」，比较宽。「巴黎有什么好玩的？」是旅行问题，会通过第一道护栏；
+  但我们的知识库只有康沃尔，模型答不出来就可能开始编。所以在每个智能体内部再加一道更严的检查。
+</p>
+<p>
+  预置的 ReAct 智能体提供了一个钩子 <code>pre_model_hook</code>：<strong>每次调用模型之前</strong>都会先执行它。
+  我们用它来检查，不合规时<strong>改写发给模型的消息</strong> —— 在最前面插一条「请礼貌拒绝」的指令。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_09_02.py（节选）">
+<pre>
+AGENT_GUARDRAIL_SYSTEM_PROMPT = (
+    "You are a strict classifier. Given the user's last message, respond with whether it is "
+    "travel-related. Travel-related queries include destinations, attractions, lodging "
+    "(hotels/BnBs), room availability, prices, or weather in Cornwall/England. "
+    "Only accept travel-related questions covering Cornwall (England) and reject any "
+    "questions from other areas in England and from other countries")
+
+AGENT_REFUSAL_INSTRUCTION = (
+    "You can only help with travel-related questions (destinations, attractions, lodging, "
+    "prices, availability, or weather in Cornwall/England). The user's request is not "
+    "travel-related. Or it might be a travel related question but not focusing on Cornwall "
+    "(England). Politely refuse and briefly explain what topics you can help with.")
+
+def pre_model_guardrail(state: dict):
+    messages = state.get("messages", [])
+    last_msg = messages[-1] if messages else None
+    if not isinstance(last_msg, HumanMessage):
+        return {}                     # 最后一条是工具结果等 → 循环进行中，不用再检查
+
+    decision = llm_guardrail.invoke([
+        SystemMessage(content=AGENT_GUARDRAIL_SYSTEM_PROMPT),
+        HumanMessage(content=last_msg.content)])
+
+    if decision.is_travel:
+        return {}                     # 放行：不做任何修改
+
+    # 拦截：只改「这一次发给模型的输入」，不改状态里保存的消息
+    return {"llm_input_messages": [
+        SystemMessage(content=AGENT_REFUSAL_INSTRUCTION), *messages]}
+
+travel_info_agent = create_react_agent(
+    model=llm_model, tools=TOOLS, state_schema=AgentState,
+    prompt="You are a helpful assistant that can search travel information ...",
+    pre_model_hook=pre_model_guardrail,          # ← 挂上钩子
+)
+
+accommodation_booking_agent = create_react_agent(
+    model=llm_model, tools=BOOKING_TOOLS, state_schema=AgentState,
+    prompt="You are a helpful assistant that can check hotel and BnB room availability ...",
+    pre_model_hook=pre_model_guardrail,          # ← 同一个钩子可以复用
+)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="agentGuardrail.ts">
+<pre>
+const AGENT_GUARDRAIL_SYSTEM_PROMPT =
+  "You are a strict classifier. Given the user's last message, respond with whether it is " +
+  "travel-related. Travel-related queries include destinations, attractions, lodging " +
+  "(hotels/BnBs), room availability, prices, or weather in Cornwall/England. " +
+  "Only accept travel-related questions covering Cornwall (England) and reject any " +
+  "questions from other areas in England and from other countries";
+
+const AGENT_REFUSAL_INSTRUCTION =
+  "You can only help with travel-related questions (destinations, attractions, lodging, " +
+  "prices, availability, or weather in Cornwall/England). The user's request is not " +
+  "travel-related. Or it might be a travel related question but not focusing on Cornwall " +
+  "(England). Politely refuse and briefly explain what topics you can help with.";
+
+async function preModelGuardrail(state: typeof MessagesAnnotation.State) {
+  const lastMsg = state.messages.at(-1);
+  if (!(lastMsg instanceof HumanMessage)) return {};      // 循环进行中，不用再检查
+
+  const decision = await llmGuardrail.invoke([
+    new SystemMessage(AGENT_GUARDRAIL_SYSTEM_PROMPT),
+    new HumanMessage(lastMsg.content as string)]);
+
+  if (decision.is_travel) return {};                      // 放行：不做任何修改
+
+  // 拦截：只改「这一次发给模型的输入」，不改状态里保存的消息
+  return { llmInputMessages: [new SystemMessage(AGENT_REFUSAL_INSTRUCTION), ...state.messages] };
+}
+
+const travelInfoAgent = createReactAgent({
+  llm: llmModel, tools: TOOLS, name: "travel_info_agent",
+  prompt: "You are a helpful assistant that can search travel information ...",
+  preModelHook: preModelGuardrail,                        // ← 挂上钩子
+});
+
+const accommodationBookingAgent = createReactAgent({
+  llm: llmModel, tools: BOOKING_TOOLS, name: "accommodation_booking_agent",
+  prompt: "You are a helpful assistant that can check hotel and BnB room availability ...",
+  preModelHook: preModelGuardrail,                        // ← 同一个钩子可以复用
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="CornwallGuardrail.java">
+<pre>
+// LangChain4j 的声明式输入护栏：在 AI Service 调用模型之前执行。
+import dev.langchain4j.guardrail.InputGuardrail;
+import dev.langchain4j.guardrail.InputGuardrailResult;
+import dev.langchain4j.service.guardrail.InputGuardrails;
+
+interface CornwallClassifier {
+    @SystemMessage("""
+            You are a strict classifier. Given the user's last message, respond with whether
+            it is travel-related. Only accept travel-related questions covering Cornwall
+            (England) and reject any questions from other areas in England and from other
+            countries.""")
+    GuardrailDecision check(String userMessage);
+}
+
+public class CornwallGuardrail implements InputGuardrail {
+    private final CornwallClassifier classifier;
+    public CornwallGuardrail(CornwallClassifier classifier) { this.classifier = classifier; }
+
+    @Override
+    public InputGuardrailResult validate(dev.langchain4j.data.message.UserMessage userMessage) {
+        GuardrailDecision decision = classifier.check(userMessage.singleText());
+        return decision.isTravel()
+                ? success()                                            // 放行
+                : fatal("I can only help with travel questions about Cornwall (England).");   // 拦截
+    }
+}
+
+interface TravelInfoAgent {
+    @SystemMessage("You are a helpful assistant that can search travel information ...")
+    @InputGuardrails(CornwallGuardrail.class)               // ← 挂上护栏
+    String chat(String userMessage);
+}
+
+// 被拦截时调用方会收到 InputGuardrailException，捕获后把其中的消息返回给用户即可。
+// （Python 版是让模型「礼貌拒绝」，这里是直接短路 —— 两种处理方式各有适用场合。）
+</pre>
+</div>
+</div>
+
+<p>两个细节：</p>
+<ul>
+  <li><strong>只检查用户消息</strong>。<code>pre_model_hook</code> 在 ReAct 循环的每一圈都会触发；如果最后一条消息是工具结果，说明这一轮已经通过检查，直接放行，避免重复分类。</li>
+  <li><strong><code>llm_input_messages</code> 不改变状态</strong>。它只影响「这一次发给模型的内容」，注入的拒绝指令不会被存进对话历史，也就不会污染后续的对话。</li>
+</ul>
+
+<div class="code" data-lang="text" data-file="两道护栏的效果">
+<pre>
+You: Write me a Python function to sort a list.
+Assistant: Sorry, I can only help with travel-related questions ...        ← 第一道（路由层）拦下
+
+You: What can I see in Paris?
+Assistant: I'm sorry, but I can only help with travel questions about Cornwall, England —
+           for example destinations, attractions, accommodation or weather there.   ← 第二道（智能体层）拦下
+
+You: What can I see in Penzance?
+Assistant: In Penzance you can visit ...                                   ← 正常回答
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 护栏的代价和局限</div>
+  <ul>
+    <li><strong>每道护栏都是一次额外的 LLM 调用</strong>。分类任务简单，用最小最快的模型就行，不要用主模型。</li>
+    <li><strong>会误伤</strong>。分类器可能把正常问题判成不相关。上线后要监控被拦截的请求，持续调整分类提示词。</li>
+    <li><strong>只看单条消息有盲区</strong>。「那里呢？」脱离上下文就无法判断是否相关。更稳妥的做法是把最近几轮对话一起交给分类器。</li>
+    <li><strong>基于 LLM 的护栏不是安全边界</strong>。精心构造的输入有可能骗过分类器。真正的权限控制（谁能读哪些数据、能执行哪些操作）必须在工具和数据库层面用确定性的代码实现。</li>
+  </ul>
+</div>
+
+<h2 id="beyond">上线之前，还有这些功课</h2>
+
+<p>记忆和护栏是重要的里程碑，但不是终点。原书最后一节列出了生产化路上的其余关卡：</p>
+
+<h3>长期记忆</h3>
+<p>
+  让助手<strong>跨会话</strong>记住用户（偏好的目的地、常订的住宿类型）。LangGraph 提供了与检查点配套的 <strong>Store</strong> 接口：
+  检查点按 <code>thread_id</code> 存「对话状态」，Store 按用户等命名空间存「长期事实」，并支持语义检索。
+  难点不在技术而在治理：存什么、存多久、用户如何查看和删除自己的数据。
+</p>
+
+<h3>人工介入（Human-in-the-loop）</h3>
+<p>
+  有些决定不该由智能体独自做：行程是否安全可行、突发天气或罢工时的建议、需要向商家确认的无障碍需求……
+  LangGraph 的做法是让图在某个节点<strong>暂停</strong>（<code>interrupt</code>），把当前状态存入检查点，等人工审核后再<strong>恢复</strong>执行 ——
+  这正是建立在本章的检查点机制之上的。产品上线初期尤其值得这么做：人工审核的记录会成为改进护栏、提示词和知识库的依据。
+</p>
+
+<h3>输出护栏（Post-model guardrails）</h3>
+<p>本章的护栏都在模型<strong>之前</strong>。模型<strong>之后</strong>同样需要把关：</p>
+<ul>
+  <li>过滤过时或错误的信息（已经永久关闭的景点、已经结束的活动）；</li>
+  <li>脱敏（只应在预订确认后才提供的民宿联系电话）；</li>
+  <li>统一品牌语气；</li>
+  <li>校验结构化输出的格式（报价、行程单是否符合下游系统的要求）。</li>
+</ul>
+
+<h3>评估</h3>
+<p>最容易被忽视、也最不可或缺的一环。改了一句提示词、换了一个模型，怎么知道整体是变好还是变坏？需要一套可以反复运行的测试：</p>
+
+<div class="tw">
+<table>
+  <tr><th>测试类型</th><th>检查什么</th><th>例子</th></tr>
+  <tr><td>功能测试</td><td>回答是否正确、相关、完整</td><td>「康沃尔适合家庭的海滩」「St Ives 现在的天气」</td></tr>
+  <tr><td>行为测试</td><td>是否遵守策略、语气是否得体</td><td>超出范围的问题是否被礼貌拒绝</td></tr>
+  <tr><td>性能测试</td><td>延迟和 API 费用</td><td>模拟暑期旅游旺季的请求高峰</td></tr>
+  <tr><td>回归测试</td><td>改动后原有能力是否退化</td><td>每次修改后，对照一组标准答案重跑</td></tr>
+</table>
+</div>
+
+<p>LangSmith 除了追踪，也提供数据集和评估功能，可以把线上的真实追踪记录沉淀成测试用例。</p>
+
+<h3>部署</h3>
+<p>
+  怎么部署取决于组织的基础设施和合规要求：自建（把图包在一个 Web 服务里，配上持久化的检查点保存器），
+  或使用托管服务。LangChain 官方的托管方案是 <strong>LangGraph Platform</strong>，它替你处理了持久化、任务队列、流式输出、
+  水平扩展这些有状态长任务特有的麻烦事。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="从原型到生产的清单">
+  <rect class="bx-g" x="20" y="20" width="132" height="64" rx="8"/><text class="lbl on-g" x="86" y="46" text-anchor="middle">✓ 短期记忆</text><text class="sm" x="86" y="66" text-anchor="middle">检查点 + thread</text>
+  <rect class="bx-g" x="168" y="20" width="132" height="64" rx="8"/><text class="lbl on-g" x="234" y="46" text-anchor="middle">✓ 输入护栏</text><text class="sm" x="234" y="66" text-anchor="middle">路由层 + 智能体层</text>
+  <rect class="bx-g" x="316" y="20" width="132" height="64" rx="8"/><text class="lbl on-g" x="382" y="46" text-anchor="middle">✓ 可观测性</text><text class="sm" x="382" y="66" text-anchor="middle">LangSmith 追踪</text>
+  <rect class="bx-d" x="464" y="20" width="132" height="64" rx="8"/><text class="lbl" x="530" y="46" text-anchor="middle">☐ 长期记忆</text><text class="sm" x="530" y="66" text-anchor="middle">Store + 数据治理</text>
+  <rect class="bx-d" x="612" y="20" width="132" height="64" rx="8"/><text class="lbl" x="678" y="46" text-anchor="middle">☐ 人工介入</text><text class="sm" x="678" y="66" text-anchor="middle">中断与恢复</text>
+  <rect class="bx-d" x="20" y="100" width="132" height="64" rx="8"/><text class="lbl" x="86" y="126" text-anchor="middle">☐ 输出护栏</text><text class="sm" x="86" y="146" text-anchor="middle">事实 / 隐私 / 格式</text>
+  <rect class="bx-d" x="168" y="100" width="132" height="64" rx="8"/><text class="lbl" x="234" y="126" text-anchor="middle">☐ 评估体系</text><text class="sm" x="234" y="146" text-anchor="middle">数据集 + 回归测试</text>
+  <rect class="bx-d" x="316" y="100" width="132" height="64" rx="8"/><text class="lbl" x="382" y="126" text-anchor="middle">☐ 持久化存储</text><text class="sm" x="382" y="146" text-anchor="middle">Postgres 检查点</text>
+  <rect class="bx-d" x="464" y="100" width="132" height="64" rx="8"/><text class="lbl" x="530" y="126" text-anchor="middle">☐ 成本与限流</text><text class="sm" x="530" y="146" text-anchor="middle">预算、重试、降级</text>
+  <rect class="bx-d" x="612" y="100" width="132" height="64" rx="8"/><text class="lbl" x="678" y="126" text-anchor="middle">☐ 部署</text><text class="sm" x="678" y="146" text-anchor="middle">自建 / 托管平台</text>
+</svg>
+<figcaption>图 14-4　绿色是本教程已经做到的，虚线是留给你的</figcaption>
+</figure>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>记忆分三种：<strong>短期</strong>（一次会话内）、<strong>用户级长期</strong>（跨会话）、<strong>应用级长期</strong>（所有用户共享）。</li>
+  <li>LangGraph 用<strong>检查点</strong>实现短期记忆：编译时配 <code>checkpointer</code>，调用时带 <code>thread_id</code>，每一步的状态自动保存和恢复。</li>
+  <li>检查点还带来了<strong>时间旅行</strong>：查看历史状态、从过去的时刻重放，以及人工介入所需的暂停与恢复。</li>
+  <li><code>InMemorySaver</code> 只适合开发；生产环境用 SQLite / Postgres 等持久化保存器。</li>
+  <li><strong>护栏</strong>把助手约束在预定范围内。输入护栏本质上是一次「分类」：通过则放行，否则走快速出口。</li>
+  <li>可以分层设防：路由层用宽规则直接返回固定拒绝语；智能体层用 <code>pre_model_hook</code> 施加更细的规则。</li>
+  <li>LLM 护栏会误判，也可能被绕过，不能代替工具和数据层面的确定性权限控制。</li>
+  <li>通往生产还需要：长期记忆、人工介入、输出护栏、系统化评估、可靠的部署。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>对比 <code>main_05_01.py</code>（无记忆）和 <code>main_08_01.py</code>（有记忆）：分别问「Penzance 的天气」然后追问「那里有酒店吗」。</li>
+    <li>开两个终端各跑一个 <code>main_08_01.py</code>（两个不同的 <code>thread_id</code>），确认它们的对话互不影响。</li>
+    <li>聊三轮之后打印 <code>get_state_history</code>，数一数有多少个检查点；找出消息数第一次超过 5 的那个。</li>
+    <li>测试两道护栏：各想三个应该被第一道拦下、应该被第二道拦下、应该正常回答的问题。有没有被误判的？</li>
+    <li>改进护栏：让分类器同时看到最近 4 条消息，这样「那里呢？」这类追问不会被误拦。</li>
+    <li>思考题：如果要加一个「真的下单预订」的工具，你会在哪里加入人工确认？确认前后的状态应该怎么保存？</li>
+  </ol>
+</div>
+
+<div class="box key">
+  <div class="t">&#127881; 恭喜你读完了全部 14 章</div>
+  <p>
+    回头看这条路：从一行「文字接龙」开始，到提示词、链、图，再到 RAG 的入库与检索、工具调用、多智能体协作、MCP、记忆和护栏。
+    这些零件没有哪一个是魔法 —— 它们都是在围绕同一个核心做文章：<strong>在合适的时机，把合适的信息和合适的工具交给模型</strong>。
+    接下来最好的学习方式，是挑一个你自己真正关心的问题，动手做一个出来。
+  </p>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

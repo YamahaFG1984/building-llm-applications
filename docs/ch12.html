@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 12 章 · 多智能体系统 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="12">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 12 章</span>
+<h1>多智能体系统</h1>
+<p class="lede">
+  一个智能体挂上二三十个工具之后，就像一个身兼数职的员工：容易拿错工具，提示词越写越长，改一处怕影响另一处。
+  解法和管理团队一样 —— <strong>分工</strong>。这一章把旅行助手拆成两个各司其职的智能体，
+  再用两种方式把它们组织起来：<strong>路由器</strong>和<strong>主管（Supervisor）</strong>。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>知道什么时候该把一个智能体拆成多个</li>
+    <li>构建第二个智能体：住宿预订（查酒店数据库 + 查民宿接口）</li>
+    <li>用路由器模式把问题分发给合适的智能体</li>
+    <li>理解路由器的局限，并用 Supervisor 模式处理跨领域的问题</li>
+    <li>在两种模式之间做出取舍</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="why">为什么要多个智能体</h2>
+
+<div class="vs">
+  <div class="old"><div class="h">一个全能智能体</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14px">
+      <li>工具越多，模型越容易选错</li>
+      <li>系统提示词要兼顾所有场景，又长又互相打架</li>
+      <li>每次调用都带着全部工具的说明书，费 token</li>
+      <li>改动任何一处，都要回归测试全部功能</li>
+    </ul></div>
+  <div class="new"><div class="h">多个专职智能体</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14px">
+      <li>每个智能体只有少量相关工具，选得准</li>
+      <li>提示词短而聚焦</li>
+      <li>可以为不同任务选不同档位的模型</li>
+      <li>可以独立开发、测试、替换</li>
+    </ul></div>
+</div>
+
+<p>我们要构建的系统：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="旅行助手的两个专职智能体及其工具">
+  <rect class="bx-a" x="270" y="14" width="220" height="50" rx="10"/>
+  <text class="ttl on-a" x="380" y="36" text-anchor="middle">协调者（本章的主角）</text><text class="sm" x="380" y="54" text-anchor="middle">路由器 或 Supervisor</text>
+
+  <rect class="bx-g" x="40" y="104" width="300" height="130" rx="12"/>
+  <text class="ttl on-g" x="190" y="128" text-anchor="middle">旅行信息智能体</text><text class="sm" x="190" y="146" text-anchor="middle">travel_info_agent（第 11 章已完成）</text>
+  <rect class="bx" x="56" y="160" width="130" height="58" rx="8"/>
+  <text class="mono" x="121" y="182" text-anchor="middle" style="font-size:11px">search_travel_info</text><text class="sm" x="121" y="202" text-anchor="middle">向量库</text>
+  <rect class="bx" x="196" y="160" width="130" height="58" rx="8"/>
+  <text class="mono" x="261" y="182" text-anchor="middle" style="font-size:11px">weather_forecast</text><text class="sm" x="261" y="202" text-anchor="middle">天气服务</text>
+
+  <rect class="bx-b" x="420" y="104" width="300" height="130" rx="12"/>
+  <text class="ttl on-b" x="570" y="128" text-anchor="middle">住宿预订智能体</text><text class="sm" x="570" y="146" text-anchor="middle">accommodation_booking_agent（本章新建）</text>
+  <rect class="bx" x="436" y="160" width="130" height="58" rx="8"/>
+  <text class="mono" x="501" y="182" text-anchor="middle">SQL 工具包</text><text class="sm" x="501" y="202" text-anchor="middle">酒店数据库</text>
+  <rect class="bx" x="576" y="160" width="130" height="58" rx="8"/>
+  <text class="mono" x="641" y="178" text-anchor="middle">check_bnb_</text><text class="mono" x="641" y="194" text-anchor="middle">availability</text><text class="sm" x="641" y="210" text-anchor="middle">民宿 REST 接口</text>
+
+  <path class="ln-a" d="M320 66 L210 100" marker-end="url(#ar-a)"/><path class="ln-a" d="M440 66 L550 100" marker-end="url(#ar-a)"/>
+</svg>
+<figcaption>图 12-1　按「知识领域」划分智能体：问信息找左边，订住宿找右边</figcaption>
+</figure>
+
+<h2 id="booking">构建住宿预订智能体</h2>
+
+<p>它需要查两类住宿，数据来源完全不同 —— 正好演示工具可以包装任何东西：</p>
+
+<h3>酒店：直接用现成的 SQL 工具包</h3>
+
+<p>
+  酒店数据在 SQLite 数据库里（<code>hotel_db/cornwall_hotels_schema.sql</code>，包含 <code>hotels</code> 和 <code>hotel_room_offers</code> 两张表）。
+  第 10 章我们手写了 Text-to-SQL 链；在智能体里更省事 —— LangChain 的 <code>SQLDatabaseToolkit</code> 直接给出一组工具：
+</p>
+
+<div class="tw">
+<table>
+  <tr><th>工具</th><th>作用</th></tr>
+  <tr><td><code>sql_db_list_tables</code></td><td>列出有哪些表</td></tr>
+  <tr><td><code>sql_db_schema</code></td><td>查看指定表的结构和几行样例数据</td></tr>
+  <tr><td><code>sql_db_query_checker</code></td><td>让 LLM 检查一条 SQL 有没有常见错误</td></tr>
+  <tr><td><code>sql_db_query</code></td><td>执行 SQL 并返回结果</td></tr>
+</table>
+</div>
+
+<p>
+  智能体会自己串起这些工具：先看有哪些表 → 看表结构 → 写 SQL → 检查 → 执行。如果执行报错，它能读到错误信息并<strong>自己改正重试</strong>。
+  这比固定的 Text-to-SQL 链更健壮，代价是多几次模型调用。
+</p>
+
+<h3>民宿：把一个 REST 接口包装成工具</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_04_01.py（节选）">
+<pre>
+from typing import List, Dict
+from langchain_community.utilities.sql_database import SQLDatabase
+from langchain_community.agent_toolkits import SQLDatabaseToolkit
+
+# —— 酒店：SQL 工具包 ——
+hotel_db = SQLDatabase.from_uri("sqlite:///hotel_db/cornwall_hotels.db")
+hotel_db_toolkit_tools = SQLDatabaseToolkit(db=hotel_db, llm=llm_model).get_tools()
+
+# —— 民宿：模拟一个外部 REST 接口 ——
+class BnBOffer(TypedDict):
+    bnb_id: int
+    bnb_name: str
+    town: str
+    available_rooms: int
+    price_per_room: float
+
+class BnBBookingService:
+    @staticmethod
+    def get_offers_near_town(town: str, num_rooms: int) -&gt; List[BnBOffer]:
+        mock_bnb_offers = [     # 真实系统里这里是一次 HTTP 请求
+            {"bnb_id": 1, "bnb_name": "Seaside BnB", "town": "Newquay",
+             "available_rooms": 3, "price_per_room": 80.0},
+            {"bnb_id": 7, "bnb_name": "Penzance Pier BnB", "town": "Penzance",
+             "available_rooms": 2, "price_per_room": 95.0},
+            # ……更多
+        ]
+        return [o for o in mock_bnb_offers
+                if o["town"].lower() == town.lower() and o["available_rooms"] &gt;= num_rooms]
+
+@tool(description="Check BnB room availability and price for a destination in Cornwall.")
+def check_bnb_availability(destination: str, num_rooms: int) -&gt; List[Dict]:
+    offers = BnBBookingService.get_offers_near_town(destination, num_rooms)
+    if not offers:
+        # 没有结果时也返回结构化的说明，而不是空列表 —— 模型更容易理解
+        return [{"error": f"No available BnBs found in {destination} for {num_rooms} rooms."}]
+    return offers
+
+# —— 组装成一个 ReAct 智能体 ——
+BOOKING_TOOLS = hotel_db_toolkit_tools + [check_bnb_availability]
+
+accommodation_booking_agent = create_react_agent(
+    model=llm_model,
+    tools=BOOKING_TOOLS,
+    state_schema=AgentState,
+    name="accommodation_booking_agent",
+    prompt="You are a helpful assistant that can check hotel and BnB room availability "
+           "and price for a destination in Cornwall. You can use the tools to get the "
+           "information you need. If the users does not specify the accommodation type, "
+           "you should check both hotels and BnBs.",
+)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="bookingAgent.ts">
+<pre>
+import Database from "better-sqlite3";
+import { tool } from "@langchain/core/tools";
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
+import { z } from "zod";
+
+// —— 酒店：自己定义两个 SQL 工具（看表结构 + 执行查询） ——
+const hotelDb = new Database("hotel_db/cornwall_hotels.db", { readonly: true });
+
+const hotelDbSchema = tool(
+  async () =&gt; (hotelDb.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL").all() as { sql: string }[])
+    .map((r) =&gt; r.sql).join("\n\n"),
+  { name: "hotel_db_schema",
+    description: "Get the schema (CREATE TABLE statements) of the Cornwall hotels database.",
+    schema: z.object({}) });
+
+const hotelDbQuery = tool(
+  async ({ sql }) =&gt; {
+    if (!/^\s*select\b/i.test(sql)) return "Error: only SELECT statements are allowed.";
+    try { return JSON.stringify(hotelDb.prepare(sql).all()); }
+    catch (e) { return `Error: ${e}`; }        // 把错误返回给模型，它会自己改 SQL 重试
+  },
+  { name: "hotel_db_query",
+    description: "Run a SQLite SELECT query against the Cornwall hotels database. " +
+                 "Call hotel_db_schema first to learn the table structure.",
+    schema: z.object({ sql: z.string().describe("A single SQLite SELECT statement") }) });
+
+// —— 民宿：模拟一个外部 REST 接口 ——
+const MOCK_BNB_OFFERS = [
+  { bnb_id: 1, bnb_name: "Seaside BnB", town: "Newquay", available_rooms: 3, price_per_room: 80 },
+  { bnb_id: 7, bnb_name: "Penzance Pier BnB", town: "Penzance", available_rooms: 2, price_per_room: 95 },
+  // ……更多
+];
+
+const checkBnbAvailability = tool(
+  async ({ destination, num_rooms }) =&gt; {
+    const offers = MOCK_BNB_OFFERS.filter((o) =&gt;
+      o.town.toLowerCase() === destination.toLowerCase() &amp;&amp; o.available_rooms &gt;= num_rooms);
+    return JSON.stringify(offers.length ? offers
+      : [{ error: `No available BnBs found in ${destination} for ${num_rooms} rooms.` }]);
+  },
+  { name: "check_bnb_availability",
+    description: "Check BnB room availability and price for a destination in Cornwall.",
+    schema: z.object({ destination: z.string(), num_rooms: z.number().int() }) });
+
+// —— 组装成一个 ReAct 智能体 ——
+export const accommodationBookingAgent = createReactAgent({
+  llm: llmModel,
+  tools: [hotelDbSchema, hotelDbQuery, checkBnbAvailability],
+  name: "accommodation_booking_agent",
+  prompt: "You are a helpful assistant that can check hotel and BnB room availability " +
+          "and price for a destination in Cornwall. You can use the tools to get the " +
+          "information you need. If the users does not specify the accommodation type, " +
+          "you should check both hotels and BnBs.",
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="BookingTools.java + BookingAgent">
+<pre>
+public class BookingTools {
+    record BnBOffer(int bnbId, String bnbName, String town, int availableRooms, double pricePerRoom) {}
+
+    private static final List&lt;BnBOffer&gt; MOCK_BNB_OFFERS = List.of(
+            new BnBOffer(1, "Seaside BnB", "Newquay", 3, 80.0),
+            new BnBOffer(7, "Penzance Pier BnB", "Penzance", 2, 95.0) /* ……更多 */);
+
+    private static final String DB_URL = "jdbc:sqlite:file:hotel_db/cornwall_hotels.db?mode=ro";   // 只读
+
+    @Tool("Get the schema (CREATE TABLE statements) of the Cornwall hotels database.")
+    public String hotelDbSchema() throws SQLException {
+        return runQuery("SELECT sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL");
+    }
+
+    @Tool("Run a SQLite SELECT query against the Cornwall hotels database. "
+        + "Call hotelDbSchema first to learn the table structure.")
+    public String hotelDbQuery(@P("A single SQLite SELECT statement") String sql) {
+        if (!sql.trim().toLowerCase().startsWith("select")) return "Error: only SELECT statements are allowed.";
+        try { return runQuery(sql); }
+        catch (SQLException e) { return "Error: " + e.getMessage(); }   // 模型会读到错误并重试
+    }
+
+    @Tool("Check BnB room availability and price for a destination in Cornwall.")
+    public Object checkBnbAvailability(@P("Town in Cornwall") String destination,
+                                       @P("Number of rooms needed") int numRooms) {
+        var offers = MOCK_BNB_OFFERS.stream()
+                .filter(o -&gt; o.town().equalsIgnoreCase(destination) &amp;&amp; o.availableRooms() &gt;= numRooms)
+                .toList();
+        return offers.isEmpty()
+                ? Map.of("error", "No available BnBs found in " + destination + " for " + numRooms + " rooms.")
+                : offers;
+    }
+
+    private String runQuery(String sql) throws SQLException { /* JDBC：执行并把结果拼成文本，见第 10 章 */ }
+}
+
+interface AccommodationBookingAgent {
+    @SystemMessage("""
+            You are a helpful assistant that can check hotel and BnB room availability
+            and price for a destination in Cornwall. You can use the tools to get the
+            information you need. If the users does not specify the accommodation type,
+            you should check both hotels and BnBs.""")
+    String chat(String userMessage);
+}
+
+AccommodationBookingAgent bookingAgent = AiServices.builder(AccommodationBookingAgent.class)
+        .chatModel(llm).tools(new BookingTools()).build();
+</pre>
+</div>
+</div>
+
+<p>现在有了两个可以独立运行的智能体。问题是：用户发来一句话，该交给谁？</p>
+
+<h2 id="router">模式一：路由器</h2>
+
+<p>
+  最简单的协调方式：在最前面放一个<strong>路由节点</strong>，判断问题属于哪个领域，然后把控制权<strong>整个交给</strong>对应的智能体。
+  智能体处理完，直接结束。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="路由器模式：路由节点把请求交给两个智能体之一，被选中的智能体处理后直接结束">
+  <rect class="bx" x="20" y="84" width="80" height="40" rx="20"/><text class="lbl" x="60" y="109" text-anchor="middle">START</text>
+  <rect class="bx-a" x="150" y="68" width="150" height="72" rx="12"/>
+  <text class="mono on-a" x="225" y="96" text-anchor="middle">router_agent</text>
+  <text class="sm" x="225" y="116" text-anchor="middle">LLM 做一道二选一</text>
+  <rect class="bx-g" x="400" y="16" width="230" height="64" rx="12"/>
+  <text class="mono on-g" x="515" y="42" text-anchor="middle">travel_info_agent</text><text class="sm" x="515" y="62" text-anchor="middle">一个完整的 ReAct 智能体（子图）</text>
+  <rect class="bx-b" x="400" y="128" width="230" height="64" rx="12"/>
+  <text class="mono on-b" x="515" y="154" text-anchor="middle">accommodation_booking_agent</text><text class="sm" x="515" y="174" text-anchor="middle">另一个完整的 ReAct 智能体</text>
+  <rect class="bx" x="670" y="84" width="72" height="40" rx="20"/><text class="lbl" x="706" y="109" text-anchor="middle">END</text>
+  <path class="ln" d="M102 104 H146" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M302 90 L396 56" marker-end="url(#ar-a)"/><path class="ln-a" d="M302 118 L396 152" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="340" y="52" text-anchor="middle">Command(goto=…)</text>
+  <path class="ln" d="M632 56 L668 90" marker-end="url(#ar)"/><path class="ln" d="M632 152 L668 118" marker-end="url(#ar)"/>
+  <text class="sm" x="380" y="206" text-anchor="middle">单程票：交出去就不回来了</text>
+</svg>
+<figcaption>图 12-2　路由器模式 —— 第 10 章的「路由链」升级版：这次被路由的是智能体</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_05_01.py（节选）">
+<pre>
+from enum import Enum
+from pydantic import BaseModel, Field
+from langgraph.types import Command
+from langgraph.graph import StateGraph, END
+
+class AgentType(str, Enum):
+    travel_info_agent = "travel_info_agent"
+    accommodation_booking_agent = "accommodation_booking_agent"
+
+class AgentTypeOutput(BaseModel):
+    agent: AgentType = Field(..., description="Which agent should handle the query?")
+
+llm_router = llm_model.with_structured_output(AgentTypeOutput)
+
+ROUTER_SYSTEM_PROMPT = (
+    "You are a router. Given the following user message, decide if it is a travel "
+    "information question (about destinations, attractions, or general travel info) "
+    "or an accommodation booking question (about hotels, BnBs, room availability, or prices).\n"
+    "If it is a travel information question, respond with 'travel_info_agent'.\n"
+    "If it is an accommodation booking question, respond with 'accommodation_booking_agent'."
+)
+
+def router_agent_node(state: AgentState) -&gt; Command[AgentType]:
+    """路由节点：决定由哪个智能体处理用户的问题。"""
+    last_msg = state["messages"][-1] if state["messages"] else None
+    if isinstance(last_msg, HumanMessage):
+        router_response = llm_router.invoke([
+            SystemMessage(content=ROUTER_SYSTEM_PROMPT),
+            HumanMessage(content=last_msg.content)])
+        return Command(goto=router_response.agent.value)       # 跳转到被选中的节点
+    return Command(goto=AgentType.travel_info_agent.value)     # 兜底
+
+graph = StateGraph(AgentState)
+graph.add_node("router_agent", router_agent_node)
+graph.add_node("travel_info_agent", travel_info_agent)                       # 编译好的智能体可以直接当节点
+graph.add_node("accommodation_booking_agent", accommodation_booking_agent)
+graph.add_edge("travel_info_agent", END)
+graph.add_edge("accommodation_booking_agent", END)
+graph.set_entry_point("router_agent")
+travel_assistant = graph.compile()
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="routerGraph.ts">
+<pre>
+import { Command, MessagesAnnotation, StateGraph, START, END } from "@langchain/langgraph";
+import { z } from "zod";
+
+const AGENTS = ["travel_info_agent", "accommodation_booking_agent"] as const;
+
+const llmRouter = llmModel.withStructuredOutput(z.object({
+  agent: z.enum(AGENTS).describe("Which agent should handle the query?"),
+}));
+
+const ROUTER_SYSTEM_PROMPT =
+  "You are a router. Given the following user message, decide if it is a travel " +
+  "information question (about destinations, attractions, or general travel info) " +
+  "or an accommodation booking question (about hotels, BnBs, room availability, or prices).\n" +
+  "If it is a travel information question, respond with 'travel_info_agent'.\n" +
+  "If it is an accommodation booking question, respond with 'accommodation_booking_agent'.";
+
+/** 路由节点：决定由哪个智能体处理用户的问题。 */
+async function routerAgentNode(state: typeof MessagesAnnotation.State) {
+  const lastMsg = state.messages.at(-1);
+  if (lastMsg instanceof HumanMessage) {
+    const { agent } = await llmRouter.invoke([
+      new SystemMessage(ROUTER_SYSTEM_PROMPT),
+      new HumanMessage(lastMsg.content as string)]);
+    return new Command({ goto: agent });                   // 跳转到被选中的节点
+  }
+  return new Command({ goto: "travel_info_agent" });       // 兜底
+}
+
+export const travelAssistant = new StateGraph(MessagesAnnotation)
+  .addNode("router_agent", routerAgentNode, { ends: [...AGENTS] })   // 声明它可能跳去哪
+  .addNode("travel_info_agent", travelInfoAgent)                     // 智能体直接当节点
+  .addNode("accommodation_booking_agent", accommodationBookingAgent)
+  .addEdge(START, "router_agent")
+  .addEdge("travel_info_agent", END)
+  .addEdge("accommodation_booking_agent", END)
+  .compile();
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="RouterAssistant.java">
+<pre>
+enum AgentType {
+    @Description("Travel information questions: destinations, attractions, weather, general travel info")
+    TRAVEL_INFO_AGENT,
+    @Description("Accommodation booking questions: hotels, BnBs, room availability, prices")
+    ACCOMMODATION_BOOKING_AGENT
+}
+
+interface Router {
+    @SystemMessage("You are a router. Decide which agent should handle the user message.")
+    AgentType route(String userMessage);
+}
+
+/** 路由器模式：先分类，再把问题整个交给被选中的智能体。 */
+class RouterAssistant {
+    private final Router router;
+    private final TravelInfoAgent travelInfoAgent;
+    private final AccommodationBookingAgent bookingAgent;
+
+    RouterAssistant(ChatModel llm, TravelInfoAgent travelInfoAgent, AccommodationBookingAgent bookingAgent) {
+        this.router = AiServices.create(Router.class, llm);
+        this.travelInfoAgent = travelInfoAgent;
+        this.bookingAgent = bookingAgent;
+    }
+
+    String chat(String userMessage) {
+        return switch (router.route(userMessage)) {
+            case TRAVEL_INFO_AGENT           -&gt; travelInfoAgent.chat(userMessage);
+            case ACCOMMODATION_BOOKING_AGENT -&gt; bookingAgent.chat(userMessage);
+        };
+    }
+}
+</pre>
+</div>
+</div>
+
+<p>两个值得注意的新东西：</p>
+<ul>
+  <li><strong>智能体可以当节点用</strong>。<code>create_react_agent</code> 返回的是一个编译好的图，而图本身可以作为另一个图的节点（子图）。这就是「组合」。</li>
+  <li><strong><code>Command(goto=...)</code></strong>：节点除了返回状态更新，还可以直接指定「下一步去哪个节点」。它把第 5 章的「条件边 + 路由函数」合二为一，写起来更直接。</li>
+</ul>
+
+<h3>试一试</h3>
+
+<div class="code" data-lang="text">
+<pre>
+You: What can I see in Penzance?
+  → router_agent 选择 travel_info_agent → 搜索向量库 → 回答
+
+You: Are there any rooms available in Penzance for 2 people?
+  → router_agent 选择 accommodation_booking_agent → 查酒店库 + 查民宿 → 回答
+</pre>
+</div>
+
+<h3>路由器的硬伤</h3>
+
+<p>再问一个跨领域的问题：</p>
+
+<div class="code" data-lang="text">
+<pre>
+You: Find me a beach town in Cornwall with nice weather, and tell me which hotels have rooms there.
+</pre>
+</div>
+
+<p>
+  这句话<strong>同时</strong>需要两个智能体：先找天气好的海滨小镇（信息），再查那里的酒店（预订）。
+  但路由器只能二选一，而且交出去就不回来 —— 无论选谁，都只能回答一半。
+</p>
+
+<h2 id="supervisor">模式二：Supervisor（主管）</h2>
+
+<p>
+  解决办法是让协调者<strong>不退场</strong>：它把任务派给一个智能体，<strong>等结果回来</strong>，
+  再决定下一步 —— 派给另一个智能体，还是已经可以回答用户了。这就是 <strong>Supervisor 模式</strong>，「智能体的智能体」。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="Supervisor 模式：主管把任务派给子智能体，子智能体完成后把结果交回主管，主管可以继续派发或给出最终答案">
+  <rect class="bx" x="20" y="34" width="90" height="46" rx="8"/><text class="lbl" x="65" y="62" text-anchor="middle">用户</text>
+  <rect class="bx-a" x="250" y="14" width="260" height="86" rx="14"/>
+  <text class="ttl on-a" x="380" y="42" text-anchor="middle">Supervisor</text>
+  <text class="sm" x="380" y="62" text-anchor="middle">一个 ReAct 智能体，</text>
+  <text class="sm" x="380" y="80" text-anchor="middle">它的「工具」是：把任务交给某个子智能体</text>
+  <path class="ln" d="M112 48 H246" marker-end="url(#ar)"/><path class="ln-g" d="M246 68 H116" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="180" y="86" text-anchor="middle">⑤ 综合后的答案</text>
+
+  <rect class="bx-g" x="60" y="184" width="270" height="86" rx="12"/>
+  <text class="ttl on-g" x="195" y="212" text-anchor="middle">travel_info_agent</text>
+  <text class="sm" x="195" y="232" text-anchor="middle">搜索向量库 + 查天气</text>
+  <text class="sm" x="195" y="252" text-anchor="middle">→「Newquay，晴，24°C」</text>
+  <rect class="bx-b" x="430" y="184" width="270" height="86" rx="12"/>
+  <text class="ttl on-b" x="565" y="212" text-anchor="middle">accommodation_booking_agent</text>
+  <text class="sm" x="565" y="232" text-anchor="middle">查酒店库 + 查民宿</text>
+  <text class="sm" x="565" y="252" text-anchor="middle">→「Newquay 有 3 家酒店有房」</text>
+
+  <path class="ln-a" d="M300 102 L210 180" marker-end="url(#ar-a)"/><text class="sm on-a" x="150" y="138" text-anchor="middle">① 找个天气好的海滨镇</text>
+  <path class="ln-g" d="M250 180 L340 102" marker-end="url(#ar-g)"/><text class="sm on-g" x="326" y="160" text-anchor="middle">② 结果</text>
+  <path class="ln-a" d="M420 102 L510 180" marker-end="url(#ar-a)"/><text class="sm on-a" x="420" y="164" text-anchor="middle">③ 查 Newquay</text>
+  <path class="ln-g" d="M550 180 L460 102" marker-end="url(#ar-g)"/><text class="sm on-g" x="548" y="138" text-anchor="middle">④ 结果</text>
+</svg>
+<figcaption>图 12-3　往返票：每个子智能体干完活都要回来汇报</figcaption>
+</figure>
+
+<p>注意第 ③ 步：主管把第 ② 步得到的镇名<strong>带进</strong>了给预订智能体的任务里。能在智能体之间<strong>传递中间结果</strong>，正是 Supervisor 比路由器强的地方。</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="main_06_01.py（节选）">
+<pre>
+from langgraph_supervisor.supervisor import create_supervisor     # pip install langgraph-supervisor
+
+# 子智能体必须有 name —— 主管靠名字来指派任务
+travel_info_agent = create_react_agent(
+    model=llm_model, tools=TOOLS, state_schema=AgentState,
+    name="travel_info_agent",
+    prompt="You are a helpful assistant that can search travel information and get the "
+           "weather forecast. Only use the tools to find the information you need "
+           "(including town names).")
+
+accommodation_booking_agent = create_react_agent(
+    model=llm_model, tools=BOOKING_TOOLS, state_schema=AgentState,
+    name="accommodation_booking_agent",
+    prompt="You are a helpful assistant that can check hotel and BnB room availability ...")
+
+travel_assistant = create_supervisor(
+    agents=[travel_info_agent, accommodation_booking_agent],
+    model=ChatOpenAI(model="gpt-5", use_responses_api=True),     # 主管要做规划，用更强的模型
+    supervisor_name="travel_assistant",
+    prompt=(
+        "You are a supervisor that manages two agents: a travel information agent and "
+        "an accommodation booking agent. You can answer user questions that might require "
+        "calling both agents when needed. Decide which agent(s) to use for each user "
+        "request and coordinate their responses."
+    ),
+).compile()
+
+# 用法不变
+result = travel_assistant.invoke({"messages": [HumanMessage(content=
+    "Find me a beach town in Cornwall with nice weather, "
+    "and tell me which hotels have rooms there.")]})
+print(result["messages"][-1].content)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="supervisor.ts">
+<pre>
+// npm install @langchain/langgraph-supervisor
+import { createSupervisor } from "@langchain/langgraph-supervisor";
+
+// 子智能体必须有 name —— 主管靠名字来指派任务
+const travelInfoAgent = createReactAgent({
+  llm: llmModel, tools: TOOLS, name: "travel_info_agent",
+  prompt: "You are a helpful assistant that can search travel information and get the " +
+          "weather forecast. Only use the tools to find the information you need " +
+          "(including town names).",
+});
+// accommodationBookingAgent 见上一节（name: "accommodation_booking_agent"）
+
+const travelAssistant = createSupervisor({
+  agents: [travelInfoAgent, accommodationBookingAgent],
+  llm: new ChatOpenAI({ model: "gpt-5" }),                 // 主管要做规划，用更强的模型
+  supervisorName: "travel_assistant",
+  prompt:
+    "You are a supervisor that manages two agents: a travel information agent and " +
+    "an accommodation booking agent. You can answer user questions that might require " +
+    "calling both agents when needed. Decide which agent(s) to use for each user " +
+    "request and coordinate their responses.",
+}).compile();
+
+const result = await travelAssistant.invoke({ messages: [new HumanMessage(
+  "Find me a beach town in Cornwall with nice weather, " +
+  "and tell me which hotels have rooms there.")] });
+console.log(result.messages.at(-1)?.content);
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="SupervisorAssistant.java">
+<pre>
+// Supervisor 的本质是「把子智能体当成工具」。在 LangChain4j 里可以直接这么写：
+// 每个 @Tool 方法内部调用一个子智能体，主管自己也是一个带工具循环的 AI Service。
+public class AgentsAsTools {
+    private final TravelInfoAgent travelInfoAgent;
+    private final AccommodationBookingAgent bookingAgent;
+
+    public AgentsAsTools(TravelInfoAgent t, AccommodationBookingAgent b) {
+        this.travelInfoAgent = t; this.bookingAgent = b;
+    }
+
+    @Tool("Ask the travel information agent. It can search travel information about "
+        + "destinations in Cornwall and get the weather forecast for a town.")
+    public String askTravelInfoAgent(@P("A complete, self-contained task description") String task) {
+        return travelInfoAgent.chat(task);
+    }
+
+    @Tool("Ask the accommodation booking agent. It can check hotel and BnB room "
+        + "availability and prices for a town in Cornwall.")
+    public String askAccommodationBookingAgent(@P("A complete, self-contained task description") String task) {
+        return bookingAgent.chat(task);
+    }
+}
+
+interface Supervisor {
+    @SystemMessage("""
+            You are a supervisor that manages two agents: a travel information agent and
+            an accommodation booking agent. You can answer user questions that might require
+            calling both agents when needed. Decide which agent(s) to use for each user
+            request and coordinate their responses.""")
+    String chat(String userMessage);
+}
+
+Supervisor travelAssistant = AiServices.builder(Supervisor.class)
+        .chatModel(OpenAiChatModel.builder()                       // 主管用更强的模型
+                .apiKey(System.getenv("OPENAI_API_KEY")).modelName("gpt-5").build())
+        .tools(new AgentsAsTools(travelInfoAgent, bookingAgent))
+        .build();
+
+System.out.println(travelAssistant.chat(
+        "Find me a beach town in Cornwall with nice weather, "
+      + "and tell me which hotels have rooms there."));
+</pre>
+</div>
+</div>
+
+<div class="box deep">
+  <div class="t">&#128300; create_supervisor 在背后做了什么</div>
+  <p>
+    它为每个子智能体自动生成一个「移交」工具（类似 <code>transfer_to_travel_info_agent</code>），
+    然后创建一个拥有这些工具的 ReAct 智能体作为主管。主管「调用工具」的效果是跳转到对应的子智能体节点；
+    子智能体跑完后，有一条固定的边<strong>回到主管</strong>。
+    所以它仍然是第 11 章的那个循环 —— 只是「工具」换成了「另一个智能体」。Java 版把这层关系直接写在了明面上。
+  </p>
+</div>
+
+<h2 id="tradeoff">两种模式怎么选</h2>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>路由器</th><th>Supervisor</th></tr>
+  <tr><td>交互方式</td><td>单程：分发后不再参与</td><td>往返：每个子任务完成后回到主管</td></tr>
+  <tr><td>能否处理跨领域问题</td><td>不能</td><td>能，且可以把前一步结果传给后一步</td></tr>
+  <tr><td>额外的 LLM 调用</td><td>1 次（分类）</td><td>多次（每次派发、每次汇总都要调用主管）</td></tr>
+  <tr><td>延迟与成本</td><td>低</td><td>高，且主管通常需要更强的模型</td></tr>
+  <tr><td>可预测性</td><td>高</td><td>较低（主管自己规划路径）</td></tr>
+  <tr><td>适合</td><td>问题通常只属于一个领域；对延迟敏感</td><td>经常需要多个专家协作完成一个请求</td></tr>
+</table>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 从简单的开始</div>
+  <p>
+    如果 95% 的用户问题只涉及一个领域，路由器就够了 —— 更快、更便宜、更容易调试。
+    等真的出现大量跨领域问题，再升级到 Supervisor。两者甚至可以组合：
+    先用路由器快速分流，只有被判断为「复杂」的请求才交给 Supervisor。
+  </p>
+</div>
+
+<h3>还有哪些多智能体结构</h3>
+
+<div class="cards">
+  <div class="card"><h4>层级式（Hierarchical）</h4><p>主管下面还有主管，每个小主管带一组专家。适合智能体数量很多的大型系统。</p></div>
+  <div class="card"><h4>群体式（Swarm / Handoff）</h4><p>没有中心协调者，智能体之间可以直接互相移交对话控制权，像客服之间的转接。</p></div>
+  <div class="card"><h4>流水线式</h4><p>智能体按固定顺序接力：研究员 → 写手 → 审稿人。本质上是第 5 章的工作流，只是每个节点是一个智能体。</p></div>
+</div>
+
+<h2 id="observe">用 LangSmith 看多智能体的执行</h2>
+
+<p>多智能体系统的追踪记录是一棵更深的树。以那个跨领域问题为例，你会看到类似这样的结构：</p>
+
+<div class="code" data-lang="text" data-file="LangSmith 追踪树（示意）">
+<pre>
+travel_assistant（supervisor）
+├─ supervisor: LLM → 决定调用 transfer_to_travel_info_agent
+├─ travel_info_agent
+│   ├─ LLM → tool_calls: search_travel_info("beach towns in Cornwall")
+│   ├─ tools: search_travel_info
+│   ├─ LLM → tool_calls: weather_forecast("Newquay"), weather_forecast("St Ives")
+│   ├─ tools: weather_forecast ×2
+│   └─ LLM → "Newquay is sunny, 24°C ..."
+├─ supervisor: LLM → 决定调用 transfer_to_accommodation_booking_agent
+├─ accommodation_booking_agent
+│   ├─ LLM → tool_calls: sql_db_list_tables
+│   ├─ ……（看表结构、写 SQL、执行）
+│   ├─ LLM → tool_calls: check_bnb_availability("Newquay", 1)
+│   └─ LLM → "Hotels with rooms in Newquay: ..."
+└─ supervisor: LLM → 综合两份结果，给出最终答案
+</pre>
+</div>
+
+<p>一次用户请求，背后可能是十几次模型调用。这也提醒我们：<strong>多智能体不是免费的午餐</strong>，每增加一层协调，延迟和费用都会上升。</p>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>工具太多、职责太杂时，把一个智能体拆成多个专职智能体：工具选得更准，提示词更聚焦，便于独立演进。</li>
+  <li>工具可以包装任何东西：向量库、SQL 数据库（现成的工具包）、REST 接口。</li>
+  <li>编译好的智能体可以直接作为另一个图的<strong>节点</strong>（子图）。</li>
+  <li><strong>路由器模式</strong>：分类后单程移交。简单、快、便宜，但处理不了需要多个智能体协作的问题。</li>
+  <li><strong>Supervisor 模式</strong>：主管反复派发任务并收回结果，能串联多个智能体、传递中间结果。更强，也更慢更贵。</li>
+  <li>Supervisor 的本质是「把智能体当工具用」的 ReAct 循环。</li>
+  <li>先用最简单的结构满足需求，确有必要再加协调层。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>按 <code>ch11/README.md</code> 的说明建好 <code>cornwall_hotels.db</code>，单独运行住宿预订智能体，问一个需要查酒店的问题，观察它调用 SQL 工具的顺序。</li>
+    <li>在路由器版本里问那个跨领域问题，看它被路由到了哪个智能体，回答缺了什么。</li>
+    <li>换成 Supervisor 版本再问一次。开启 LangSmith，数一数总共调用了多少次 LLM，和路由器版本对比。</li>
+    <li>给路由器加一个 <code>"both"</code> 选项：当问题跨领域时，先后调用两个智能体再合并答案。这和 Supervisor 相比，差在哪里？</li>
+    <li>新增第三个智能体「交通智能体」（工具可以是模拟的火车时刻查询），并把它接入 Supervisor。你需要改几处代码？</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 6 章 · RAG 基础与 ChromaDB — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="6">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 6 章</span>
+<h1>RAG 基础与 ChromaDB</h1>
+<p class="lede">
+  模型不知道你公司的产品手册，也不知道上周才发布的公告。把这些资料全部塞进提示词？太长、太贵。
+  <strong>RAG</strong>（检索增强生成）的办法是：提问时<strong>只把最相关的那几段</strong>找出来交给模型。
+  这一章不用任何框架，从零搭一个最小的 RAG，把原理看透。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解「语义搜索」和关键词搜索的区别</li>
+    <li>知道嵌入（embedding）和向量库是什么、为什么需要它们</li>
+    <li>掌握 RAG 的两个阶段：入库与问答</li>
+    <li>用 ChromaDB 存入文本并做语义检索</li>
+    <li>亲手写一个 RAG 问答函数，并让它在不知道答案时老实承认</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="simple">从最简单的问答开始</h2>
+
+<p>假设有一段关于古城帕埃斯图姆的介绍，想让模型根据它回答问题。最直接的做法：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="最简单的问答：把整篇文档和问题一起放进提示词">
+  <rect class="bx" x="20" y="20" width="130" height="44" rx="8"/><text class="lbl" x="85" y="47" text-anchor="middle">一整篇文档</text>
+  <rect class="bx" x="20" y="86" width="130" height="44" rx="8"/><text class="lbl" x="85" y="113" text-anchor="middle">用户的问题</text>
+  <path class="ln" d="M152 42 H210 V68 H246" marker-end="url(#ar)"/><path class="ln" d="M152 108 H210 V82"/>
+  <rect class="bx-g" x="250" y="40" width="190" height="70" rx="10"/>
+  <text class="ttl on-g" x="345" y="68" text-anchor="middle">提示词</text>
+  <text class="sm" x="345" y="90" text-anchor="middle">「阅读下文并回答：……」</text>
+  <path class="ln" d="M442 75 H496" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="500" y="45" width="100" height="60" rx="10"/><text class="ttl on-a" x="550" y="80" text-anchor="middle">LLM</text>
+  <path class="ln" d="M602 75 H656" marker-end="url(#ar)"/>
+  <rect class="bx" x="660" y="50" width="80" height="50" rx="8"/><text class="lbl" x="700" y="80" text-anchor="middle">答案</text>
+</svg>
+<figcaption>图 6-1　文档短的时候，这样就够了</figcaption>
+</figure>
+
+<p>
+  但真实的知识库可能有上千份文档。全塞进去既超出上下文窗口，也没必要 ——
+  回答「帕埃斯图姆有几座神庙」只需要其中一两段。于是问题变成：<strong>怎么快速找出「相关的那几段」？</strong>
+</p>
+
+<h2 id="semantic">语义搜索：按意思找，而不是按字面找</h2>
+
+<p>
+  传统搜索靠<strong>关键词匹配</strong>。问「度假去哪儿凉快」，它找不到一篇写着「避暑胜地推荐」的文章，因为一个字都对不上。
+  <strong>语义搜索</strong>比较的是<em>意思</em>，而不是字面。
+</p>
+
+<h3>嵌入：把意思变成坐标</h3>
+
+<p>
+  实现语义搜索的关键是<strong>嵌入模型</strong>（embedding model）。它把一段文字转换成一长串数字（比如 1536 个），叫做<strong>向量</strong>。
+  你可以把向量想象成这段话在一个「意思空间」里的<strong>坐标</strong>：<em>意思相近的文字，坐标也挨得近</em>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="嵌入空间示意：意思相近的句子在空间中距离更近，问题的向量落在相关文本附近">
+  <rect class="bx-d" x="20" y="16" width="440" height="268" rx="10"/>
+  <text class="sm" x="34" y="36">「意思空间」（真实的有上千维，这里压成二维示意）</text>
+  <path class="ln" d="M50 260 H440" marker-end="url(#ar)"/><path class="ln" d="M50 260 V50" marker-end="url(#ar)"/>
+
+  <circle cx="150" cy="110" r="7" style="fill:var(--blue)"/><text class="sm" x="162" y="106">帕埃斯图姆有三座多立克式神庙</text>
+  <circle cx="130" cy="150" r="7" style="fill:var(--blue)"/><text class="sm" x="142" y="154">希腊殖民者建立了波塞冬尼亚</text>
+  <circle cx="262" cy="70" r="7" style="fill:var(--blue)"/><text class="sm" x="274" y="74">古希腊神庙保存完好</text>
+
+  <circle cx="340" cy="210" r="7" style="fill:var(--green)"/><text class="sm" x="270" y="234">康沃尔的海滩适合冲浪</text>
+  <circle cx="380" cy="184" r="7" style="fill:var(--green)"/><text class="sm" x="318" y="172">纽基是冲浪胜地</text>
+
+  <circle cx="118" cy="92" r="8" style="fill:var(--accent)"/>
+  <text class="sm on-a" x="62" y="70">问题：帕埃斯图姆有几座神庙？</text>
+  <path class="ln-a" d="M124 96 L142 106" style="stroke-dasharray:3 3"/>
+  <path class="ln-a" d="M126 90 L254 72" style="stroke-dasharray:3 3"/>
+
+  <rect class="bx" x="490" y="16" width="250" height="124" rx="8"/>
+  <text class="ttl" x="504" y="40">嵌入模型做的事</text>
+  <text class="mono" x="504" y="66">"三座多立克式神庙"</text>
+  <text class="sm" x="504" y="86">↓ embedding model</text>
+  <text class="mono" x="504" y="108">[0.021, -0.447, 0.189,</text>
+  <text class="mono" x="504" y="126"> 0.730, ... ]（上千个数）</text>
+
+  <rect class="bx-a" x="490" y="156" width="250" height="128" rx="8"/>
+  <text class="ttl on-a" x="504" y="180">语义搜索 = 找最近的点</text>
+  <text class="sm" x="504" y="204">① 把问题也变成向量</text>
+  <text class="sm" x="504" y="224">② 计算它和每段文本向量的距离</text>
+  <text class="sm" x="504" y="244">③ 返回最近的 k 个</text>
+  <text class="sm" x="504" y="268">常用的距离：余弦相似度</text>
+</svg>
+<figcaption>图 6-2　蓝点是关于帕埃斯图姆的文本，绿点是关于康沃尔的；问题（橙点）离蓝点近</figcaption>
+</figure>
+
+<h2 id="rag">RAG 设计模式</h2>
+
+<p>有了语义搜索，RAG 的整体思路就清楚了。它分成两个阶段：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="RAG 两阶段：入库阶段把文档切块、向量化、存入向量库；问答阶段把问题向量化、检索、拼入提示词、生成答案">
+  <rect class="bx-d" x="12" y="12" width="736" height="130" rx="10"/>
+  <text class="ttl on-b" x="28" y="36">阶段一 · 入库（Ingestion / Indexing）</text>
+  <text class="sm" x="290" y="36">提前做，资料更新时重做</text>
+  <rect class="bx" x="28" y="62" width="100" height="58" rx="8"/><text class="lbl" x="78" y="86" text-anchor="middle">原始文档</text><text class="sm" x="78" y="104" text-anchor="middle">PDF / 网页…</text>
+  <rect class="bx-b" x="164" y="62" width="110" height="58" rx="8"/><text class="lbl on-b" x="219" y="86" text-anchor="middle">① 切块</text><text class="sm" x="219" y="104" text-anchor="middle">chunk</text>
+  <rect class="bx-b" x="310" y="62" width="130" height="58" rx="8"/><text class="lbl on-b" x="375" y="86" text-anchor="middle">② 向量化</text><text class="sm" x="375" y="104" text-anchor="middle">嵌入模型</text>
+  <rect class="bx-p" x="560" y="52" width="170" height="78" rx="10"/>
+  <text class="ttl on-p" x="645" y="80" text-anchor="middle">③ 向量库</text><text class="sm" x="645" y="100" text-anchor="middle">存：文本块 + 向量 + 元数据</text>
+  <path class="ln" d="M130 91 H160" marker-end="url(#ar)"/><path class="ln" d="M276 91 H306" marker-end="url(#ar)"/>
+  <path class="ln" d="M442 91 H556" marker-end="url(#ar)"/>
+
+  <rect class="bx-d" x="12" y="176" width="736" height="172" rx="10"/>
+  <text class="ttl on-a" x="28" y="200">阶段二 · 问答（Retrieval + Generation）</text>
+  <text class="sm" x="440" y="200">每次提问都执行</text>
+  <rect class="bx" x="28" y="236" width="100" height="58" rx="8"/><text class="lbl" x="78" y="270" text-anchor="middle">用户问题</text>
+  <rect class="bx-b" x="164" y="236" width="110" height="58" rx="8"/><text class="lbl on-b" x="219" y="260" text-anchor="middle">④ 向量化</text><text class="sm" x="219" y="278" text-anchor="middle">同一个嵌入模型</text>
+  <rect class="bx-p" x="310" y="236" width="130" height="58" rx="8"/><text class="lbl on-p" x="375" y="260" text-anchor="middle">⑤ 检索 R</text><text class="sm" x="375" y="278" text-anchor="middle">最相近的 k 块</text>
+  <rect class="bx-g" x="476" y="236" width="110" height="58" rx="8"/><text class="lbl on-g" x="531" y="260" text-anchor="middle">⑥ 增强 A</text><text class="sm" x="531" y="278" text-anchor="middle">问题 + 资料</text>
+  <rect class="bx-a" x="622" y="236" width="108" height="58" rx="8"/><text class="lbl on-a" x="676" y="260" text-anchor="middle">⑦ 生成 G</text><text class="sm" x="676" y="278" text-anchor="middle">LLM → 答案</text>
+  <path class="ln" d="M130 265 H160" marker-end="url(#ar)"/><path class="ln" d="M276 265 H306" marker-end="url(#ar)"/>
+  <path class="ln" d="M442 265 H472" marker-end="url(#ar)"/><path class="ln" d="M588 265 H618" marker-end="url(#ar)"/>
+  <path class="ln-p" d="M645 132 V160 H375 V232" marker-end="url(#ar-p)"/>
+  <text class="sm on-p" x="510" y="154" text-anchor="middle">在这里查</text>
+  <path class="ln-d" d="M78 296 V326 H531 V298" marker-end="url(#ar)"/>
+  <text class="sm" x="304" y="340" text-anchor="middle">原始问题也要放进提示词</text>
+</svg>
+<figcaption>图 6-3　Retrieval（检索）· Augmented（增强）· Generation（生成）</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#128273; 用一个比喻记住 RAG</div>
+  <p>
+    普通的 LLM 问答是<strong>闭卷考试</strong>：只能凭记忆回答，记不清就可能瞎编。
+    RAG 是<strong>开卷考试</strong>：先翻到书上相关的那几页（检索），把内容摆在面前（增强），再作答（生成）。
+    答案有据可查，资料随时可以更新，而模型本身一个参数都不用改。
+  </p>
+</div>
+
+<h2 id="vector">向量库</h2>
+
+<p>
+  <strong>向量库</strong>（vector store）专门干两件事：存向量，以及「给我一个向量，快速找出和它最接近的那些」。
+  当数据量到百万级时，逐个比较就太慢了，所以它们使用<strong>近似最近邻</strong>（ANN）索引 —— 牺牲一点点精度换取数量级的速度提升。
+</p>
+
+<h3>向量「库」与向量「数据库」</h3>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>向量库（library）</th><th>向量数据库（database）</th></tr>
+  <tr><td>形态</td><td>嵌在你的程序里运行</td><td>独立的服务</td></tr>
+  <tr><td>数据</td><td>通常在内存里，自己负责保存</td><td>持久化、可增删改、支持元数据过滤</td></tr>
+  <tr><td>扩展性</td><td>单机</td><td>可分布式、多副本</td></tr>
+  <tr><td>适合</td><td>原型、离线分析</td><td>生产环境</td></tr>
+  <tr><td>例子</td><td>FAISS</td><td>Chroma、Qdrant、Milvus、Pinecone、Weaviate</td></tr>
+</table>
+</div>
+
+<h3>常见选择</h3>
+
+<div class="tw">
+<table>
+  <tr><th>名称</th><th>类型</th><th>一句话特点</th></tr>
+  <tr><td>Chroma</td><td>开源，可嵌入也可独立部署</td><td>上手最快，适合学习和中小规模应用。<strong>本教程使用</strong></td></tr>
+  <tr><td>FAISS</td><td>开源库（Meta）</td><td>纯检索库，速度极快，没有数据库功能</td></tr>
+  <tr><td>Qdrant</td><td>开源 / 云服务</td><td>Rust 实现，过滤能力强</td></tr>
+  <tr><td>Milvus</td><td>开源 / 云服务</td><td>面向十亿级大规模场景</td></tr>
+  <tr><td>Weaviate</td><td>开源 / 云服务</td><td>内置混合检索（关键词 + 向量）</td></tr>
+  <tr><td>Pinecone</td><td>全托管云服务</td><td>不用运维，按量付费</td></tr>
+  <tr><td>pgvector</td><td>PostgreSQL 扩展</td><td>已经在用 Postgres 的团队的自然选择</td></tr>
+</table>
+</div>
+
+<h2 id="chroma">用 ChromaDB 存和查</h2>
+
+<p>对应仓库的 <code>ch06/06-chromadb-ingestion-and-querying.ipynb</code>。先存三段关于帕埃斯图姆的文字：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+import chromadb                       # pip install chromadb
+
+chroma_client = chromadb.Client()     # 进程内的内存数据库，关掉就没了
+
+tourism_collection = chroma_client.create_collection(name="tourism_collection")
+
+tourism_collection.add(
+    documents=[
+        "Paestum, Greek Poseidonia, ancient city in southern Italy near the west coast, "
+        "22 miles (35 km) southeast of modern Salerno ... Paestum is noted for its "
+        "splendidly preserved Greek temples.",
+        "Poseidonia was probably founded about 600 BC by Greek colonists from Sybaris ... "
+        "the city came under the domination of the Lucanians ...",
+        "The ancient Greek part of Paestum consists of two sacred areas containing three "
+        "Doric temples in a remarkable state of preservation. ...",
+    ],
+    metadatas=[
+        {"source": "https://www.britannica.com/place/Paestum"},
+        {"source": "https://www.britannica.com/place/Paestum"},
+        {"source": "https://www.britannica.com/place/Paestum"},
+    ],
+    ids=["paestum-br-01", "paestum-br-02", "paestum-br-03"]
+)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// JS 版的 Chroma 是客户端，需要先启动一个 Chroma 服务：
+//   docker run -p 8000:8000 chromadb/chroma
+//   npm install chromadb @chroma-core/default-embed
+import { ChromaClient } from "chromadb";
+
+const chromaClient = new ChromaClient();          // 默认连接 http://localhost:8000
+
+const tourismCollection = await chromaClient.getOrCreateCollection({
+  name: "tourism_collection" });
+
+await tourismCollection.add({
+  documents: [
+    "Paestum, Greek Poseidonia, ancient city in southern Italy near the west coast, " +
+    "22 miles (35 km) southeast of modern Salerno ... Paestum is noted for its " +
+    "splendidly preserved Greek temples.",
+    "Poseidonia was probably founded about 600 BC by Greek colonists from Sybaris ... " +
+    "the city came under the domination of the Lucanians ...",
+    "The ancient Greek part of Paestum consists of two sacred areas containing three " +
+    "Doric temples in a remarkable state of preservation. ...",
+  ],
+  metadatas: [
+    { source: "https://www.britannica.com/place/Paestum" },
+    { source: "https://www.britannica.com/place/Paestum" },
+    { source: "https://www.britannica.com/place/Paestum" },
+  ],
+  ids: ["paestum-br-01", "paestum-br-02", "paestum-br-03"],
+});
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 先启动 Chroma 服务：docker run -p 8000:8000 chromadb/chroma
+// 依赖：langchain4j-chroma、langchain4j-embeddings-all-minilm-l6-v2
+import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.embedding.onnx.allminilml6v2.AllMiniLmL6V2EmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
+
+// 在本机运行的小型嵌入模型 —— 和 Chroma 的 Python 版默认使用的是同一个
+EmbeddingModel embeddingModel = new AllMiniLmL6V2EmbeddingModel();
+
+EmbeddingStore&lt;TextSegment&gt; tourismCollection = ChromaEmbeddingStore.builder()
+        .baseUrl("http://localhost:8000")
+        .collectionName("tourism_collection")
+        .build();
+
+var source = Metadata.from("source", "https://www.britannica.com/place/Paestum");
+List&lt;TextSegment&gt; segments = List.of(
+        TextSegment.from("Paestum, Greek Poseidonia, ancient city in southern Italy ... "
+                + "Paestum is noted for its splendidly preserved Greek temples.", source),
+        TextSegment.from("Poseidonia was probably founded about 600 BC by Greek colonists "
+                + "from Sybaris ...", source),
+        TextSegment.from("The ancient Greek part of Paestum consists of two sacred areas "
+                + "containing three Doric temples in a remarkable state of preservation. ...", source));
+
+// 在 Java 里「向量化」这一步是显式的：先算向量，再连同文本一起存进去
+tourismCollection.addAll(embeddingModel.embedAll(segments).content(), segments);
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 向量化在哪儿发生的</div>
+  <p>
+    Python 和 TypeScript 的代码里看不到「计算向量」这一步 —— Chroma 在 <code>add()</code> 时自动用内置的小模型
+    （<code>all-MiniLM-L6-v2</code>）算好了。Java 版把这一步写了出来，正好对应图 6-3 的 ②。
+    下一章会改用 OpenAI 的嵌入模型，质量更高。
+  </p>
+</div>
+
+<h3>语义检索</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+results = tourism_collection.query(
+    query_texts=["How many Doric temples are in Paestum"],
+    n_results=1          # 只要最相近的 1 条
+)
+print(results)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const results = await tourismCollection.query({
+  queryTexts: ["How many Doric temples are in Paestum"],
+  nResults: 1,           // 只要最相近的 1 条
+});
+console.log(results);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
+
+var request = EmbeddingSearchRequest.builder()
+        .queryEmbedding(embeddingModel.embed("How many Doric temples are in Paestum").content())
+        .maxResults(1)           // 只要最相近的 1 条
+        .build();
+
+tourismCollection.search(request).matches().forEach(m -&gt;
+        System.out.println(m.score() + "  " + m.embedded().text()));
+</pre>
+</div>
+</div>
+
+<div class="code" data-lang="text" data-file="Python 版的输出（节选）">
+<pre>
+{'ids': [['paestum-br-03']],
+ 'distances': [[0.7664123773574829]],
+ 'metadatas': [[{'source': 'https://www.britannica.com/place/Paestum'}]],
+ 'documents': [['The ancient Greek part of Paestum consists of two sacred areas
+                 containing three Doric temples in a remarkable state of preservation. ...']]}
+</pre>
+</div>
+
+<p>
+  问题里说的是 "How many Doric temples"，命中的文本里写的是 "three Doric temples" —— 数据库并不「理解」问题，
+  它只是发现这两段话的向量靠得最近。<code>distances</code> 越小表示越相近（Java 版的 <code>score</code> 则是越大越相近）。
+</p>
+
+<h2 id="scratch">从零实现 RAG</h2>
+
+<p>现在把「检索」和「生成」接起来。三个小函数，刚好对应 R、A、G：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from openai import OpenAI
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+# R：检索
+def query_vector_database(question):
+    results = tourism_collection.query(query_texts=[question], n_results=1)
+    return results['documents'][0][0]
+
+# A：增强 —— 把检索到的文本和问题拼成提示词
+def prompt_template(question, text):
+    return f'Read the following text and answer this question: {question}. \nText: {text}'
+
+# G：生成
+def execute_llm_prompt(prompt_input):
+    return openai_client.chat.completions.create(
+        model='gpt-5-nano',
+        messages=[
+         {"role": "system", "content": "You are an assistant for question-answering tasks."},
+         {"role": "user", "content": prompt_input}
+        ])
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import OpenAI from "openai";
+const openaiClient = new OpenAI();
+
+// R：检索
+async function queryVectorDatabase(question: string): Promise&lt;string&gt; {
+  const results = await tourismCollection.query({ queryTexts: [question], nResults: 1 });
+  return results.documents[0][0] ?? "";
+}
+
+// A：增强 —— 把检索到的文本和问题拼成提示词
+function promptTemplate(question: string, text: string): string {
+  return `Read the following text and answer this question: ${question}. \nText: ${text}`;
+}
+
+// G：生成
+async function executeLlmPrompt(promptInput: string): Promise&lt;string&gt; {
+  const response = await openaiClient.chat.completions.create({
+    model: "gpt-5-nano",
+    messages: [
+      { role: "system", content: "You are an assistant for question-answering tasks." },
+      { role: "user", content: promptInput },
+    ],
+  });
+  return response.choices[0].message.content ?? "";
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+
+// R：检索
+static String queryVectorDatabase(String question) {
+    var request = EmbeddingSearchRequest.builder()
+            .queryEmbedding(embeddingModel.embed(question).content())
+            .maxResults(1).build();
+    return tourismCollection.search(request).matches().get(0).embedded().text();
+}
+
+// A：增强 —— 把检索到的文本和问题拼成提示词
+static String promptTemplate(String question, String text) {
+    return "Read the following text and answer this question: %s. \nText: %s"
+            .formatted(question, text);
+}
+
+// G：生成
+static String executeLlmPrompt(String promptInput) {
+    return llm.chat(
+            SystemMessage.from("You are an assistant for question-answering tasks."),
+            UserMessage.from(promptInput)).aiMessage().text();
+}
+</pre>
+</div>
+</div>
+
+<h3>一个陷阱问题</h3>
+
+<p>资料里只说了「有三座多立克式神庙」，并没有提到柱子的数量。如果我们问柱子有多少根呢？</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+trick_question = "How many columns have the three temples got in total?"
+
+tq_result_text = query_vector_database(trick_question)
+tq_prompt = prompt_template(trick_question, tq_result_text)
+print(execute_llm_prompt(tq_prompt).choices[0].message.content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const trickQuestion = "How many columns have the three temples got in total?";
+
+const tqResultText = await queryVectorDatabase(trickQuestion);
+const tqPrompt = promptTemplate(trickQuestion, tqResultText);
+console.log(await executeLlmPrompt(tqPrompt));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+String trickQuestion = "How many columns have the three temples got in total?";
+
+String tqResultText = queryVectorDatabase(trickQuestion);
+String tqPrompt = promptTemplate(trickQuestion, tqResultText);
+System.out.println(executeLlmPrompt(tqPrompt));
+</pre>
+</div>
+</div>
+
+<p>
+  用上面那个朴素的提示词，模型很可能会<strong>从自己的训练记忆里</strong>凑一个数字出来，或者干脆编一个。
+  这就是<strong>幻觉</strong>（hallucination）—— 而且用户完全分辨不出哪些内容来自你的资料、哪些是模型自己加的。
+</p>
+
+<h3>更安全的提示词</h3>
+
+<div class="vs">
+  <div class="old"><div class="h">朴素版</div>
+    <div class="code" data-lang="prompt"><pre>
+Read the following text and
+answer this question: {question}.
+Text: {text}
+</pre></div></div>
+  <div class="new"><div class="h">安全版</div>
+    <div class="code" data-lang="prompt"><pre>
+Use the following pieces of retrieved
+context to answer the question.
+Only use the retrieved context to
+answer the question.
+If you don't know the answer, or the
+answer is not contained in the retrieved
+context, just say that you don't know.
+Use three sentences maximum and keep
+the answer concise.
+Question: {question}
+Context: {text}
+Answer:
+</pre></div></div>
+</div>
+
+<p>安全版多了三条约束：<strong>只用给定资料</strong>、<strong>不知道就说不知道</strong>、<strong>回答要简短</strong>。换上它之后，同一个陷阱问题会得到「I don't know」。</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 这是 RAG 最重要的一条提示词纪律</div>
+  <p>
+    一个会老实说「资料里没有」的助手，远比一个什么都敢答的助手有用。
+    只要是面向真实用户的 RAG 系统，提示词里都应该有「仅依据上下文回答，否则承认不知道」这类约束。
+  </p>
+</div>
+
+<h3>组装成聊天机器人</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+def my_chatbot(question):
+    results_text = query_vector_database(question)          # R 检索
+    prompt_input = prompt_template(question, results_text)  # A 增强
+    prompt_output = execute_llm_prompt(prompt_input)        # G 生成
+    return prompt_output
+
+question = """Let me know how many temples there are in Paestum,
+who constructed them, and what architectural style they are"""
+
+print(my_chatbot(question).choices[0].message.content)
+# 可能的输出：There are three temples in Paestum. They were built by Greek colonists
+#            and are in the Doric style.
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+async function myChatbot(question: string): Promise&lt;string&gt; {
+  const resultsText = await queryVectorDatabase(question);    // R 检索
+  const promptInput = promptTemplate(question, resultsText);  // A 增强
+  return executeLlmPrompt(promptInput);                       // G 生成
+}
+
+const question = `Let me know how many temples there are in Paestum,
+who constructed them, and what architectural style they are`;
+
+console.log(await myChatbot(question));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+static String myChatbot(String question) {
+    String resultsText = queryVectorDatabase(question);          // R 检索
+    String promptInput = promptTemplate(question, resultsText);  // A 增强
+    return executeLlmPrompt(promptInput);                        // G 生成
+}
+
+String question = """
+        Let me know how many temples there are in Paestum,
+        who constructed them, and what architectural style they are""";
+
+System.out.println(myChatbot(question));
+</pre>
+</div>
+</div>
+
+<p>三行代码，一个完整的 RAG。后面四章做的所有事情，都是在让这三步<strong>各自做得更好</strong>。</p>
+
+<h2 id="glossary">RAG 术语表</h2>
+
+<div class="tw">
+<table>
+  <tr><th>术语</th><th>含义</th></tr>
+  <tr><td>块 Chunk</td><td>文档被切分后的片段，是检索的基本单位</td></tr>
+  <tr><td>嵌入 Embedding</td><td>一段文本的向量表示；也指「把文本变成向量」这个动作</td></tr>
+  <tr><td>嵌入模型</td><td>把文本转换成向量的模型。入库和提问必须用<strong>同一个</strong></td></tr>
+  <tr><td>向量库 Vector store</td><td>存储向量并支持相似度检索的数据库</td></tr>
+  <tr><td>集合 Collection</td><td>向量库里的一个「表」</td></tr>
+  <tr><td>入库 / 索引 Ingestion / Indexing</td><td>把文档切块、向量化、存入向量库的过程</td></tr>
+  <tr><td>检索 Retrieval</td><td>根据问题找出最相关的文本块</td></tr>
+  <tr><td>上下文 Context</td><td>检索到并放进提示词的那些文本</td></tr>
+  <tr><td>Top-k</td><td>检索时返回最相近的 k 个结果</td></tr>
+  <tr><td>元数据 Metadata</td><td>附在文本块上的额外信息（来源、日期、类别），可用于过滤和引用</td></tr>
+  <tr><td>幻觉 Hallucination</td><td>模型生成了看似合理但没有依据的内容</td></tr>
+  <tr><td>接地 Grounding</td><td>让模型的回答以给定资料为依据</td></tr>
+</table>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>语义搜索按<em>意思</em>而非字面匹配；靠的是把文本变成向量，再比较向量之间的距离。</li>
+  <li>RAG 分两个阶段：<strong>入库</strong>（切块 → 向量化 → 存储）和<strong>问答</strong>（问题向量化 → 检索 → 拼提示词 → 生成）。</li>
+  <li>向量库负责存向量和快速找近邻；Chroma 上手最简单。</li>
+  <li>入库和查询必须使用同一个嵌入模型，否则向量之间没有可比性。</li>
+  <li>RAG 提示词要约束模型「只依据上下文回答，不知道就说不知道」，否则它会用训练记忆补空，产生幻觉。</li>
+  <li>一个最小的 RAG 只需要三个函数：检索、拼提示词、调用模型。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>把 <code>n_results</code> 改成 3，观察三条结果的 <code>distances</code>，它们的排序符合你的直觉吗？</li>
+    <li>用朴素版提示词问陷阱问题，记录回答；换成安全版再问一次，对比。</li>
+    <li>往集合里加几段完全无关的文本（比如菜谱），再问帕埃斯图姆的问题，检索还准确吗？</li>
+    <li>现在 <code>query_vector_database</code> 只返回 1 条。改成返回 3 条并拼接在一起，回答质量有没有变化？</li>
+    <li>修改 <code>my_chatbot</code>，让它在答案后面附上来源链接（提示：<code>metadatas</code>）。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

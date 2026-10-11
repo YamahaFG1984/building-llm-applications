@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 8 章 · 高级索引 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="8">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 8 章</span>
+<h1>高级索引</h1>
+<p class="lede">
+  基础 RAG 跑起来很容易，但很快会撞墙：明明资料里有答案，就是检索不出来；或者检索出来了，却只有半句话，模型看不明白。
+  从这一章起的三章，是一个<strong>「RAG 效果不好怎么办」的工具箱</strong>。先从源头下手：文档到底该怎么切、怎么建索引。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>知道基础 RAG 常见的六类问题，以及各自对应的解法</li>
+    <li>理解块大小的两难：小块好找，大块好懂</li>
+    <li>按文档结构（HTML 标题）和按大小两种方式切分</li>
+    <li>掌握「用小的去找，把大的交出去」这个核心套路的四种变体</li>
+    <li>了解表格和图片这类非纯文本内容怎么处理</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="issues">基础 RAG 会在哪里出问题</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="基础 RAG 流程上六个常见问题点及其对应的解决方案所在章节">
+  <text class="ttl on-b" x="20" y="26">入库</text>
+  <rect class="bx" x="70" y="10" width="90" height="34" rx="6"/><text class="sm" x="115" y="31" text-anchor="middle">文档</text>
+  <rect class="bx-b" x="200" y="10" width="110" height="34" rx="6"/><text class="sm on-b" x="255" y="31" text-anchor="middle">切分 + 向量化</text>
+  <rect class="bx-p" x="350" y="10" width="110" height="34" rx="6"/><text class="sm on-p" x="405" y="31" text-anchor="middle">向量库</text>
+  <path class="ln" d="M162 27 H196" marker-end="url(#ar)"/><path class="ln" d="M312 27 H346" marker-end="url(#ar)"/>
+
+  <text class="ttl on-a" x="20" y="116">问答</text>
+  <rect class="bx" x="70" y="100" width="90" height="34" rx="6"/><text class="sm" x="115" y="121" text-anchor="middle">用户问题</text>
+  <rect class="bx-p" x="200" y="100" width="110" height="34" rx="6"/><text class="sm on-p" x="255" y="121" text-anchor="middle">检索</text>
+  <rect class="bx-g" x="350" y="100" width="110" height="34" rx="6"/><text class="sm on-g" x="405" y="121" text-anchor="middle">检索结果</text>
+  <rect class="bx-a" x="500" y="100" width="110" height="34" rx="6"/><text class="sm on-a" x="555" y="121" text-anchor="middle">LLM 生成</text>
+  <path class="ln" d="M162 117 H196" marker-end="url(#ar)"/><path class="ln" d="M312 117 H346" marker-end="url(#ar)"/><path class="ln" d="M462 117 H496" marker-end="url(#ar)"/>
+  <path class="ln-p" d="M405 46 V70 H255 V96" marker-end="url(#ar-p)"/>
+
+  <circle cx="255" cy="60" r="11" style="fill:var(--red)"/><text x="255" y="64.5" text-anchor="middle" style="fill:#fff;font-size:12px;font-weight:700">1</text>
+  <circle cx="115" cy="150" r="11" style="fill:var(--red)"/><text x="115" y="154.5" text-anchor="middle" style="fill:#fff;font-size:12px;font-weight:700">2</text>
+  <circle cx="180" cy="100" r="11" style="fill:var(--red)"/><text x="180" y="104.5" text-anchor="middle" style="fill:#fff;font-size:12px;font-weight:700">3</text>
+  <circle cx="470" cy="44" r="11" style="fill:var(--red)"/><text x="470" y="48.5" text-anchor="middle" style="fill:#fff;font-size:12px;font-weight:700">4</text>
+  <circle cx="255" cy="150" r="11" style="fill:var(--red)"/><text x="255" y="154.5" text-anchor="middle" style="fill:#fff;font-size:12px;font-weight:700">5</text>
+  <circle cx="480" cy="100" r="11" style="fill:var(--red)"/><text x="480" y="104.5" text-anchor="middle" style="fill:#fff;font-size:12px;font-weight:700">6</text>
+
+  <rect class="bx-d" x="20" y="180" width="720" height="108" rx="8"/>
+  <text class="sm" x="34" y="202">❶ 切得不好，检索到的块不对或不完整　→ 高级索引（本章）</text>
+  <text class="sm" x="34" y="222">❷ 用户问得含糊、口语化　→ 问题改写（第 9 章）</text>
+  <text class="sm" x="34" y="242">❸ 问题的措辞不适合拿去检索　→ 问题改写（第 9 章）</text>
+  <text class="sm" x="400" y="202">❹ 答案不在这个库里　→ 路由到多个数据源（第 10 章）</text>
+  <text class="sm" x="400" y="222">❺ 结构化数据没法语义检索　→ 查询生成（第 10 章）</text>
+  <text class="sm" x="400" y="242">❻ 无关内容混进了上下文　→ 检索后处理（第 10 章）</text>
+  <text class="sm on-r" x="34" y="272">原则：先定位问题出在哪一环，再对症下药 —— 不要一上来就把所有技巧全堆上去。</text>
+</svg>
+<figcaption>图 8-1　基础 RAG 的六个薄弱点，以及接下来三章的地图</figcaption>
+</figure>
+
+<h2 id="size">块大小的两难</h2>
+
+<p>切分时最先要定的是块的大小，而这是一个<strong>没有两全其美</strong>的选择：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="小块与大块的取舍：小块检索精确但上下文不足，大块上下文充足但检索不精确">
+  <rect class="bx-b" x="20" y="20" width="340" height="210" rx="12"/>
+  <text class="ttl on-b" x="190" y="46" text-anchor="middle">细粒度的小块（如 500 字符）</text>
+  <rect class="bx" x="40" y="62" width="60" height="26" rx="4"/><rect class="bx" x="106" y="62" width="60" height="26" rx="4"/>
+  <rect class="bx-a" x="172" y="62" width="60" height="26" rx="4"/><rect class="bx" x="238" y="62" width="60" height="26" rx="4"/>
+  <text class="sm on-a" x="202" y="80" text-anchor="middle">命中</text>
+  <text class="lbl on-g" x="40" y="118">✓ 每块只讲一件事，向量「不掺水」</text>
+  <text class="lbl on-g" x="40" y="140">✓ 检索精确</text>
+  <text class="lbl on-r" x="40" y="170">✗ 上下文太少，模型可能看不懂</text>
+  <text class="sm" x="40" y="192">例：检索到「可无限次乘车 3 天」，</text>
+  <text class="sm" x="40" y="210">但「是哪种票」写在上一块里</text>
+
+  <rect class="bx-g" x="400" y="20" width="340" height="210" rx="12"/>
+  <text class="ttl on-g" x="570" y="46" text-anchor="middle">粗粒度的大块（如 3000 字符）</text>
+  <rect class="bx-a" x="420" y="62" width="300" height="26" rx="4"/>
+  <text class="sm on-a" x="570" y="80" text-anchor="middle">一大块里包含很多话题</text>
+  <text class="lbl on-g" x="420" y="118">✓ 上下文完整，模型读得明白</text>
+  <text class="lbl on-r" x="420" y="148">✗ 多个话题的意思「平均」成一个向量</text>
+  <text class="lbl on-r" x="420" y="170">✗ 具体问题不容易匹配上</text>
+  <text class="sm" x="420" y="192">例：一块里同时讲交通、住宿、美食，</text>
+  <text class="sm" x="420" y="210">问「怎么坐火车」时相似度被稀释</text>
+</svg>
+<figcaption>图 8-2　小块好找但不好懂，大块好懂但不好找</figcaption>
+</figure>
+
+<p>这一章后半部分的所有技巧，本质上都在想办法<strong>两头都占</strong>。先看切分方式。</p>
+
+<h2 id="split">切分策略</h2>
+
+<div class="tw">
+<table>
+  <tr><th>策略</th><th>优点</th><th>缺点</th><th>LangChain 的类</th></tr>
+  <tr><td>按文档结构（标题层级）</td><td>每块是一个完整的小主题，语义最准</td><td>块大小差别很大</td><td><code>HTMLHeaderTextSplitter</code>、<code>HTMLSectionSplitter</code>、<code>MarkdownHeaderTextSplitter</code></td></tr>
+  <tr><td>按 token 数</td><td>大小一致，方便控制成本</td><td>边界处会切断句子</td><td><code>TokenTextSplitter</code></td></tr>
+  <tr><td>按字符数</td><td>大小一致，实现最简单</td><td>切断句子，损失语义</td><td><code>CharacterTextSplitter</code></td></tr>
+  <tr><td>按段落 / 句子 / 单词递归</td><td>多数情况下保住语义</td><td>小块可能缺上下文</td><td><code>RecursiveCharacterTextSplitter</code></td></tr>
+</table>
+</div>
+
+<h3>实验：同一个网页，两种切法</h3>
+
+<p>
+  数据换成英国旅游目的地。以 Wikivoyage 的 Cornwall（康沃尔）页面为例，建两个集合：一个按 HTML 标题切成<strong>细块</strong>，一个按 3000 字符切成<strong>粗块</strong>。
+  对应仓库的 <code>ch08/08-advanced_indexing.ipynb</code>。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_chroma import Chroma
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.document_loaders import AsyncHtmlLoader
+from langchain_community.document_transformers import Html2TextTransformer
+from langchain_text_splitters import HTMLSectionSplitter, RecursiveCharacterTextSplitter
+
+embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+cornwall_granular_collection = Chroma(collection_name="cornwall_granular",
+                                      embedding_function=embeddings)
+cornwall_coarse_collection = Chroma(collection_name="cornwall_coarse",
+                                    embedding_function=embeddings)
+
+docs = AsyncHtmlLoader("https://en.wikivoyage.org/wiki/Cornwall").load()
+
+# 细块：每个 h1 / h2 小节一块
+html_section_splitter = HTMLSectionSplitter(
+    headers_to_split_on=[("h1", "Header 1"), ("h2", "Header 2")])
+
+def split_docs_into_granular_chunks(docs):
+    all_chunks = []
+    for doc in docs:
+        all_chunks.extend(html_section_splitter.split_text(doc.page_content))
+    return all_chunks
+
+# 粗块：先把 HTML 转成纯文本，再按 3000 字符切
+html2text_transformer = Html2TextTransformer()
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=300)
+
+def split_docs_into_coarse_chunks(docs):
+    text_docs = html2text_transformer.transform_documents(docs)
+    return text_splitter.split_documents(text_docs)
+
+cornwall_granular_collection.add_documents(split_docs_into_granular_chunks(docs))
+cornwall_coarse_collection.add_documents(split_docs_into_coarse_chunks(docs))
+
+# 同一个问题，分别查两个集合
+query = "Events or festivals in Cornwall"
+for doc in cornwall_granular_collection.similarity_search(query, k=3): print(doc)
+for doc in cornwall_coarse_collection.similarity_search(query, k=3): print(doc)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// LangChain.js 没有 HTMLSectionSplitter，用 cheerio 自己按 h2 切，逻辑很直白。
+import * as cheerio from "cheerio";
+import { Document } from "@langchain/core/documents";
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+import { Chroma } from "@langchain/community/vectorstores/chroma";
+import { OpenAIEmbeddings } from "@langchain/openai";
+
+const embeddings = new OpenAIEmbeddings();
+const granular = new Chroma(embeddings, { collectionName: "cornwall_granular" });
+const coarse   = new Chroma(embeddings, { collectionName: "cornwall_coarse" });
+
+const url = "https://en.wikivoyage.org/wiki/Cornwall";
+const html = await (await fetch(url)).text();
+
+// 细块：每个 h2 小节一块
+function splitIntoGranularChunks(html: string, source: string): Document[] {
+  const $ = cheerio.load(html);
+  const chunks: Document[] = [];
+  $("h2").each((_, h2) =&gt; {
+    const title = $(h2).text().trim();
+    // 从这个 h2 往后，直到下一个 h2 之前的所有兄弟节点
+    const text = $(h2).closest(".mw-heading, h2").nextUntil(".mw-heading2, h2").text().trim();
+    if (text) chunks.push(new Document({
+      pageContent: `${title}\n${text}`, metadata: { source, "Header 2": title } }));
+  });
+  return chunks;
+}
+
+// 粗块：去标签后按 3000 字符切
+async function splitIntoCoarseChunks(html: string, source: string): Promise&lt;Document[]&gt; {
+  const $ = cheerio.load(html);
+  $("script, style").remove();
+  const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 3000, chunkOverlap: 300 });
+  return splitter.createDocuments([$("body").text()], [{ source }]);
+}
+
+await granular.addDocuments(splitIntoGranularChunks(html, url));
+await coarse.addDocuments(await splitIntoCoarseChunks(html, url));
+
+const query = "Events or festivals in Cornwall";
+console.log(await granular.similaritySearch(query, 3));
+console.log(await coarse.similaritySearch(query, 3));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 用 Jsoup 按 h2 切细块；粗块用 LangChain4j 的递归切分器。
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Element;
+
+String url = "https://en.wikivoyage.org/wiki/Cornwall";
+var page = Jsoup.connect(url).get();
+
+// 细块：每个 h2 小节一块
+List&lt;TextSegment&gt; granularChunks = new ArrayList&lt;&gt;();
+for (Element h2 : page.select("h2")) {
+    var text = new StringBuilder(h2.text()).append("\n");
+    Element start = h2.parent().hasClass("mw-heading") ? h2.parent() : h2;
+    for (Element sib = start.nextElementSibling();
+         sib != null &amp;&amp; sib.selectFirst("h2") == null &amp;&amp; !sib.tagName().equals("h2");
+         sib = sib.nextElementSibling()) {
+        text.append(sib.text()).append("\n");
+    }
+    granularChunks.add(TextSegment.from(text.toString(),
+            Metadata.from(Map.of("source", url, "header2", h2.text()))));
+}
+
+// 粗块：纯文本按 3000 字符切，重叠 300
+List&lt;TextSegment&gt; coarseChunks = DocumentSplitters.recursive(3000, 300)
+        .split(Document.from(page.body().text(), Metadata.from("source", url)));
+
+granularStore.addAll(embeddingModel.embedAll(granularChunks).content(), granularChunks);
+coarseStore.addAll(embeddingModel.embedAll(coarseChunks).content(), coarseChunks);
+</pre>
+</div>
+</div>
+
+<p>实验结论和图 8-2 一致：细块检索命中的小节很精准，但有的块只有寥寥几行；粗块内容丰富，但混进了不少无关话题。</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 没有通用的最佳块大小</div>
+  <p>
+    它取决于文档类型（合同条款 vs 游记）、问题类型（查事实 vs 要综述）和嵌入模型。
+    唯一可靠的办法是：准备一批有代表性的问题，换几种切法，<strong>实测</strong>哪种检索得最准。
+  </p>
+</div>
+
+<h2 id="core">核心套路：用小的去找，把大的交出去</h2>
+
+<p>
+  既然「好找」和「好懂」矛盾，那就<strong>把这两件事拆开</strong>：
+  向量库里存用来<em>匹配</em>的小东西，另外用一个文档库存用来<em>阅读</em>的大块，两者靠 ID 关联。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 320" role="img" aria-label="多向量检索：向量库中存放代理文本，每个代理通过 doc_id 指向文档库中的父块，检索时匹配代理、返回父块">
+  <rect class="bx" x="20" y="130" width="90" height="46" rx="8"/><text class="lbl" x="65" y="158" text-anchor="middle">用户问题</text>
+
+  <rect class="bx-p" x="170" y="20" width="250" height="280" rx="12"/>
+  <text class="ttl on-p" x="295" y="44" text-anchor="middle">向量库：存「代理」</text>
+  <text class="sm" x="295" y="62" text-anchor="middle">小而聚焦，用来做相似度匹配</text>
+  <rect class="bx" x="186" y="76" width="218" height="30" rx="5"/><text class="sm" x="196" y="96">代理 a　doc_id = P1</text>
+  <rect class="bx-a" x="186" y="112" width="218" height="30" rx="5"/><text class="sm on-a" x="196" y="132">代理 b　doc_id = P1　← 命中</text>
+  <rect class="bx" x="186" y="148" width="218" height="30" rx="5"/><text class="sm" x="196" y="168">代理 c　doc_id = P1</text>
+  <rect class="bx" x="186" y="184" width="218" height="30" rx="5"/><text class="sm" x="196" y="204">代理 d　doc_id = P2</text>
+  <rect class="bx" x="186" y="220" width="218" height="30" rx="5"/><text class="sm" x="196" y="240">代理 e　doc_id = P2</text>
+  <text class="sm" x="295" y="274" text-anchor="middle">代理可以是：子块 / 摘要 /</text>
+  <text class="sm" x="295" y="290" text-anchor="middle">假设问题 / 单个句子</text>
+
+  <rect class="bx-g" x="500" y="20" width="240" height="190" rx="12"/>
+  <text class="ttl on-g" x="620" y="44" text-anchor="middle">文档库：存「父块」</text>
+  <text class="sm" x="620" y="62" text-anchor="middle">大而完整，用来给模型阅读</text>
+  <rect class="bx-a" x="516" y="78" width="208" height="54" rx="6"/>
+  <text class="lbl on-a" x="526" y="100">P1 ：一大段完整的原文……</text><text class="sm" x="526" y="120">（3000 字符）</text>
+  <rect class="bx" x="516" y="140" width="208" height="54" rx="6"/>
+  <text class="lbl" x="526" y="162">P2 ：另一大段原文……</text><text class="sm" x="526" y="182">（3000 字符）</text>
+
+  <path class="ln" d="M112 153 H166" marker-end="url(#ar)"/><text class="sm" x="139" y="145" text-anchor="middle">① 匹配</text>
+  <path class="ln-a" d="M406 127 H470 V105 H512" marker-end="url(#ar-a)"/><text class="sm on-a" x="460" y="97" text-anchor="middle">② 按 doc_id 取</text>
+  <path class="ln-g" d="M620 212 V262 H560" marker-end="url(#ar-g)"/>
+  <rect class="bx-a" x="470" y="244" width="88" height="40" rx="8"/><text class="lbl on-a" x="514" y="269" text-anchor="middle">LLM</text>
+  <text class="sm on-g" x="660" y="250" text-anchor="middle">③ 把父块</text><text class="sm on-g" x="660" y="266" text-anchor="middle">交给模型</text>
+</svg>
+<figcaption>图 8-3　匹配用「代理」，阅读用「父块」—— 本章后面四种技巧都是这张图的变体</figcaption>
+</figure>
+
+<div class="tw">
+<table>
+  <tr><th>变体</th><th>向量库里存的「代理」</th><th>返回给模型的</th><th>入库成本</th></tr>
+  <tr><td>① 父子块</td><td>把粗块再切成的小块</td><td>粗块</td><td>低（不调 LLM）</td></tr>
+  <tr><td>② 摘要嵌入</td><td>LLM 为粗块写的摘要</td><td>粗块</td><td>高（每块调一次 LLM）</td></tr>
+  <tr><td>③ 假设问题嵌入</td><td>LLM 设想的「这块能回答哪些问题」</td><td>粗块</td><td>高</td></tr>
+  <tr><td>④ 细块扩展</td><td>细块本身</td><td>细块 + 前后相邻的块</td><td>低</td></tr>
+</table>
+</div>
+
+<h3 id="parent">变体 ①：父子块（ParentDocumentRetriever）</h3>
+
+<p>LangChain 为最常见的这种情况提供了现成的类，自动完成「粗块切子块、建立关联、检索时换回父块」：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_classic.retrievers import ParentDocumentRetriever
+from langchain_classic.storage import InMemoryStore
+
+parent_splitter = RecursiveCharacterTextSplitter(chunk_size=3000)   # 父块：给模型读
+child_splitter = RecursiveCharacterTextSplitter(chunk_size=500)     # 子块：用来匹配
+
+child_chunks_collection = Chroma(collection_name="uk_child_chunks",
+                                 embedding_function=embeddings)
+doc_store = InMemoryStore()                                         # 存父块
+
+parent_doc_retriever = ParentDocumentRetriever(
+    vectorstore=child_chunks_collection,
+    docstore=doc_store,
+    child_splitter=child_splitter,
+    parent_splitter=parent_splitter)
+
+for destination_url in uk_destination_urls:
+    html_docs = AsyncHtmlLoader(destination_url).load()
+    text_docs = html2text_transformer.transform_documents(html_docs)
+    parent_doc_retriever.add_documents(text_docs, ids=None)   # 一次完成两边的入库
+
+# 检索：匹配的是子块，返回的是父块
+retrieved_docs = parent_doc_retriever.invoke("Cornwall Ranger")
+print(len(retrieved_docs[0].page_content))        # ≈ 3000
+
+# 对比：直接搜子块，只能拿到 500 字符的碎片
+child_docs_only = child_chunks_collection.similarity_search("Cornwall Ranger")
+print(len(child_docs_only[0].page_content))       # ≈ 500
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { ParentDocumentRetriever } from "@langchain/classic/retrievers/parent_document";
+import { InMemoryStore } from "@langchain/core/stores";
+
+const parentSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 3000, chunkOverlap: 0 });
+const childSplitter  = new RecursiveCharacterTextSplitter({ chunkSize: 500,  chunkOverlap: 0 });
+
+const childChunksCollection = new Chroma(embeddings, { collectionName: "uk_child_chunks" });
+
+const parentDocRetriever = new ParentDocumentRetriever({
+  vectorstore: childChunksCollection,       // 子块：用来匹配
+  byteStore: new InMemoryStore&lt;Uint8Array&gt;(),   // 父块：给模型读
+  parentSplitter,
+  childSplitter,
+});
+
+for (const url of ukDestinationUrls) {
+  const textDocs = await loadAsTextDocs(url);          // 抓取并转成纯文本 Document
+  await parentDocRetriever.addDocuments(textDocs);     // 一次完成两边的入库
+}
+
+// 检索：匹配的是子块，返回的是父块
+const retrievedDocs = await parentDocRetriever.invoke("Cornwall Ranger");
+console.log(retrievedDocs[0].pageContent.length);      // ≈ 3000
+
+// 对比：直接搜子块
+const childDocsOnly = await childChunksCollection.similaritySearch("Cornwall Ranger");
+console.log(childDocsOnly[0].pageContent.length);      // ≈ 500
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// LangChain4j 没有 ParentDocumentRetriever，手写一个小工具类。
+// 它同样适用于后面的摘要、假设问题、细块扩展 —— 区别只在「代理文本从哪来」。
+class MultiVectorIndex {
+    private final EmbeddingStore&lt;TextSegment&gt; vectorStore;     // 存代理
+    private final EmbeddingModel embeddingModel;
+    private final Map&lt;String, String&gt; docStore = new ConcurrentHashMap&lt;&gt;();   // doc_id → 父块
+
+    MultiVectorIndex(EmbeddingStore&lt;TextSegment&gt; vectorStore, EmbeddingModel embeddingModel) {
+        this.vectorStore = vectorStore;
+        this.embeddingModel = embeddingModel;
+    }
+
+    /** 存入一个父块，以及指向它的若干代理文本 */
+    void add(String parentText, List&lt;String&gt; proxies) {
+        String docId = UUID.randomUUID().toString();
+        docStore.put(docId, parentText);
+        List&lt;TextSegment&gt; segments = proxies.stream()
+                .map(p -&gt; TextSegment.from(p, Metadata.from("doc_id", docId)))
+                .toList();
+        vectorStore.addAll(embeddingModel.embedAll(segments).content(), segments);
+    }
+
+    /** 匹配代理，返回去重后的父块 */
+    List&lt;String&gt; retrieve(String query, int k) {
+        var request = EmbeddingSearchRequest.builder()
+                .queryEmbedding(embeddingModel.embed(query).content())
+                .maxResults(k).build();
+        return vectorStore.search(request).matches().stream()
+                .map(m -&gt; m.embedded().metadata().getString("doc_id"))
+                .distinct()
+                .map(docStore::get)
+                .toList();
+    }
+}
+
+// —— 变体 ①：代理 = 父块切出来的子块 ——
+var index = new MultiVectorIndex(childChunksStore, embeddingModel);
+var parentSplitter = DocumentSplitters.recursive(3000, 0);
+var childSplitter  = DocumentSplitters.recursive(500, 0);
+
+for (String url : ukDestinationUrls) {
+    for (TextSegment parent : parentSplitter.split(loadAsTextDoc(url))) {
+        List&lt;String&gt; children = childSplitter.split(Document.from(parent.text())).stream()
+                .map(TextSegment::text).toList();
+        index.add(parent.text(), children);
+    }
+}
+
+System.out.println(index.retrieve("Cornwall Ranger", 4).get(0).length());   // ≈ 3000
+</pre>
+</div>
+</div>
+
+<p>
+  "Cornwall Ranger" 是一种火车通票的名字。只搜子块能找到提到它的那句话，却丢掉了周围关于「在康沃尔怎么出行」的上下文；
+  父子块检索既找得准，又把完整的一段交给了模型。
+</p>
+
+<h3 id="multivector">变体 ②③：用摘要或假设问题做代理（MultiVectorRetriever）</h3>
+
+<p>
+  更一般的工具是 <code>MultiVectorRetriever</code>：它不管代理从哪来，只要求每个代理的元数据里带着父块的 <code>doc_id</code>。
+  于是代理可以是任何东西 —— 包括<strong>让 LLM 生成的文本</strong>。
+</p>
+
+<div class="vs">
+  <div class="old"><div class="h" style="background:var(--blue-bg);color:var(--blue)">② 摘要嵌入</div>
+    <p style="padding:10px 14px;margin:0;font-size:14px">
+      让 LLM 为每个粗块写一段摘要，嵌入<strong>摘要</strong>。摘要去掉了细枝末节，向量更能代表这块「主要讲什么」。
+      适合「概括性」的问题，比如「康沃尔的交通情况怎么样」。</p></div>
+  <div class="new"><div class="h">③ 假设问题嵌入</div>
+    <p style="padding:10px 14px;margin:0;font-size:14px">
+      让 LLM 为每个粗块设想几个「它能回答的问题」，嵌入<strong>这些问题</strong>。
+      这样检索时是<em>问题对问题</em>匹配，比「问题对陈述」更容易对上。</p></div>
+</div>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+import uuid
+from typing import List
+from pydantic import BaseModel, Field
+from langchain_classic.retrievers.multi_vector import MultiVectorRetriever
+from langchain_classic.storage import InMemoryByteStore
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+
+llm = ChatOpenAI(model="gpt-5-nano", openai_api_key=OPENAI_API_KEY)
+doc_key = "doc_id"
+
+# —— ② 生成摘要的链 ——
+summarization_chain = (
+    {"document": lambda x: x.page_content}
+    | ChatPromptTemplate.from_template("Summarize the following document:\n\n{document}")
+    | llm
+    | StrOutputParser())
+
+# —— ③ 生成假设问题的链：用结构化输出直接拿到字符串列表 ——
+class HypotheticalQuestions(BaseModel):
+    """A list of hypothetical questions for given text."""
+    questions: List[str] = Field(..., description="List of hypothetical questions for given text")
+
+hypothetical_questions_chain = (
+    {"document_text": lambda x: x.page_content}
+    | ChatPromptTemplate.from_template(
+        "Generate a list of exactly 4 hypothetical questions that the below text "
+        "could be used to answer:\n\n{document_text}")
+    | llm.with_structured_output(HypotheticalQuestions)
+    | (lambda x: x.questions))
+
+# —— 通用的入库流程：只有「代理怎么来」这一行不同 ——
+def build_retriever(collection_name, make_proxies):
+    retriever = MultiVectorRetriever(
+        vectorstore=Chroma(collection_name=collection_name, embedding_function=embeddings),
+        byte_store=InMemoryByteStore())
+
+    for destination_url in uk_destination_urls:
+        html_docs = AsyncHtmlLoader(destination_url).load()
+        text_docs = html2text_transformer.transform_documents(html_docs)
+        coarse_chunks = parent_splitter.split_documents(text_docs)
+        coarse_chunks_ids = [str(uuid.uuid4()) for _ in coarse_chunks]
+
+        proxies = []
+        for coarse_chunk, coarse_chunk_id in zip(coarse_chunks, coarse_chunks_ids):
+            for text in make_proxies(coarse_chunk):                 # ← 唯一的区别
+                proxies.append(Document(page_content=text,
+                                        metadata={doc_key: coarse_chunk_id}))
+
+        retriever.vectorstore.add_documents(proxies)                        # 代理 → 向量库
+        retriever.docstore.mset(list(zip(coarse_chunks_ids, coarse_chunks)))  # 父块 → 文档库
+    return retriever
+
+summary_retriever  = build_retriever("uk_summaries",
+                                     lambda c: [summarization_chain.invoke(c)])
+question_retriever = build_retriever("uk_hypothetical_questions",
+                                     lambda c: hypothetical_questions_chain.invoke(c))
+
+print(summary_retriever.invoke("Cornwall travel"))
+print(question_retriever.invoke("How can you go to Brighton from London?"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { v4 as uuidv4 } from "uuid";
+import { z } from "zod";
+import { MultiVectorRetriever } from "@langchain/classic/retrievers/multi_vector";
+import { InMemoryStore } from "@langchain/core/stores";
+import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { StringOutputParser } from "@langchain/core/output_parsers";
+
+const llm = new ChatOpenAI({ model: "gpt-5-nano" });
+const docKey = "doc_id";
+
+// —— ② 生成摘要 ——
+const summarizationChain = ChatPromptTemplate
+  .fromTemplate("Summarize the following document:\n\n{document}")
+  .pipe(llm).pipe(new StringOutputParser());
+
+// —— ③ 生成假设问题：用 Zod schema 做结构化输出 ——
+const HypotheticalQuestions = z.object({
+  questions: z.array(z.string()).describe("List of hypothetical questions for given text"),
+});
+const hypotheticalQuestionsChain = ChatPromptTemplate
+  .fromTemplate("Generate a list of exactly 4 hypothetical questions that the below text " +
+                "could be used to answer:\n\n{document_text}")
+  .pipe(llm.withStructuredOutput(HypotheticalQuestions));
+
+// —— 通用的入库流程：只有「代理怎么来」不同 ——
+async function buildRetriever(
+  collectionName: string,
+  makeProxies: (chunk: Document) =&gt; Promise&lt;string[]&gt;,
+) {
+  const retriever = new MultiVectorRetriever({
+    vectorstore: new Chroma(embeddings, { collectionName }),
+    byteStore: new InMemoryStore&lt;Uint8Array&gt;(),
+    idKey: docKey,
+  });
+
+  for (const url of ukDestinationUrls) {
+    const coarseChunks = await parentSplitter.splitDocuments(await loadAsTextDocs(url));
+    const ids = coarseChunks.map(() =&gt; uuidv4());
+
+    const proxies: Document[] = [];
+    for (const [i, chunk] of coarseChunks.entries()) {
+      for (const text of await makeProxies(chunk)) {             // ← 唯一的区别
+        proxies.push(new Document({ pageContent: text, metadata: { [docKey]: ids[i] } }));
+      }
+    }
+    await retriever.vectorstore.addDocuments(proxies);                       // 代理 → 向量库
+    await retriever.docstore.mset(coarseChunks.map((c, i) =&gt; [ids[i], c]));  // 父块 → 文档库
+  }
+  return retriever;
+}
+
+const summaryRetriever = await buildRetriever("uk_summaries",
+  async (c) =&gt; [await summarizationChain.invoke({ document: c.pageContent })]);
+const questionRetriever = await buildRetriever("uk_hypothetical_questions",
+  async (c) =&gt; (await hypotheticalQuestionsChain.invoke({ document_text: c.pageContent })).questions);
+
+console.log(await summaryRetriever.invoke("Cornwall travel"));
+console.log(await questionRetriever.invoke("How can you go to Brighton from London?"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 复用上面的 MultiVectorIndex，只需要换「代理从哪来」。
+interface Indexer {
+    @UserMessage("Summarize the following document:\n\n{{document}}")
+    String summarize(@V("document") String document);
+
+    // 返回类型是 List&lt;String&gt;，LangChain4j 会自动要求模型输出结构化结果
+    @UserMessage("""
+            Generate a list of exactly 4 hypothetical questions that the below text
+            could be used to answer:
+
+            {{document_text}}""")
+    List&lt;String&gt; hypotheticalQuestions(@V("document_text") String text);
+}
+
+Indexer indexer = AiServices.create(Indexer.class, llm);
+
+var summaryIndex  = new MultiVectorIndex(summariesStore, embeddingModel);
+var questionIndex = new MultiVectorIndex(questionsStore, embeddingModel);
+
+for (String url : ukDestinationUrls) {
+    for (TextSegment parent : parentSplitter.split(loadAsTextDoc(url))) {
+        summaryIndex.add(parent.text(), List.of(indexer.summarize(parent.text())));    // ②
+        questionIndex.add(parent.text(), indexer.hypotheticalQuestions(parent.text())); // ③
+    }
+}
+
+System.out.println(summaryIndex.retrieve("Cornwall travel", 4));
+System.out.println(questionIndex.retrieve("How can you go to Brighton from London?", 4));
+</pre>
+</div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 这两种方法入库很慢、很贵</div>
+  <p>
+    每个粗块都要调用一次 LLM。几百个块还好，几十万个块就是一笔可观的费用和时间。
+    实践中的建议：对外层循环做并行；把生成的摘要 / 问题持久化，别每次重建；先在小样本上验证确实有效，再全量跑。
+  </p>
+</div>
+
+<div class="box deep">
+  <div class="t">&#128300; 结构化输出：with_structured_output</div>
+  <p>
+    生成假设问题时，我们要的是一个字符串列表，而不是一段需要再解析的文字。
+    <code>with_structured_output(Schema)</code> 让模型<strong>按给定的结构返回对象</strong>（底层利用了模型的函数调用 / JSON 模式能力）。
+    它比第 4 章「在提示词里举例 + 手动 <code>json.loads</code>」可靠得多，后面的章节会大量使用。
+    Python 用 Pydantic 模型描述结构，TypeScript 用 Zod，Java 直接用方法的返回类型。
+  </p>
+</div>
+
+<h3 id="expand">变体 ④：细块扩展</h3>
+
+<p>
+  反过来想：检索仍然用细块，但命中之后，<strong>把它前后相邻的块也一起带上</strong>。
+  这相当于给命中的那句话配上「前情」和「后续」。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="细块扩展：命中块 n 时，返回 n-1、n、n+1 三块拼接成的扩展块">
+  <rect class="bx" x="40" y="30" width="110" height="40" rx="6"/><text class="sm" x="95" y="55" text-anchor="middle">块 n−2</text>
+  <rect class="bx-g" x="160" y="30" width="110" height="40" rx="6"/><text class="sm on-g" x="215" y="55" text-anchor="middle">块 n−1</text>
+  <rect class="bx-a" x="280" y="30" width="110" height="40" rx="6"/><text class="sm on-a" x="335" y="55" text-anchor="middle">块 n（命中）</text>
+  <rect class="bx-g" x="400" y="30" width="110" height="40" rx="6"/><text class="sm on-g" x="455" y="55" text-anchor="middle">块 n+1</text>
+  <rect class="bx" x="520" y="30" width="110" height="40" rx="6"/><text class="sm" x="575" y="55" text-anchor="middle">块 n+2</text>
+  <path class="ln-g" d="M160 84 V96 H510 V84"/>
+  <path class="ln-g" d="M335 96 V112" marker-end="url(#ar-g)"/>
+  <text class="lbl on-g" x="335" y="132" text-anchor="middle">返回给模型的「扩展块」= 前一块 + 命中块 + 后一块</text>
+  <text class="sm" x="690" y="55" text-anchor="middle">原文顺序 →</text>
+</svg>
+<figcaption>图 8-4　匹配靠细块的精确，阅读靠邻居补足上下文</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+granular_chunk_splitter = RecursiveCharacterTextSplitter(chunk_size=500)
+
+multi_vector_retriever = MultiVectorRetriever(
+    vectorstore=Chroma(collection_name="uk_granular_chunks", embedding_function=embeddings),
+    byte_store=InMemoryByteStore())
+
+for destination_url in uk_destination_urls:
+    html_docs = AsyncHtmlLoader(destination_url).load()
+    text_docs = html2text_transformer.transform_documents(html_docs)
+    granular_chunks = granular_chunk_splitter.split_documents(text_docs)
+
+    expanded_chunk_store_items = []
+    for i, granular_chunk in enumerate(granular_chunks):
+        # 取前一块、当前块、后一块（注意首尾边界）
+        neighbours = granular_chunks[max(i - 1, 0): i + 2]
+        expanded_chunk_text = "\n".join(c.page_content for c in neighbours)
+
+        expanded_chunk_id = str(uuid.uuid4())
+        expanded_chunk_store_items.append(
+            (expanded_chunk_id, Document(page_content=expanded_chunk_text)))
+        granular_chunk.metadata[doc_key] = expanded_chunk_id    # 细块指向它的扩展块
+
+    multi_vector_retriever.vectorstore.add_documents(granular_chunks)      # 细块 → 向量库
+    multi_vector_retriever.docstore.mset(expanded_chunk_store_items)       # 扩展块 → 文档库
+
+retrieved_docs = multi_vector_retriever.invoke("Cornwall Ranger")
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const granularSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 500, chunkOverlap: 0 });
+
+const expansionRetriever = new MultiVectorRetriever({
+  vectorstore: new Chroma(embeddings, { collectionName: "uk_granular_chunks" }),
+  byteStore: new InMemoryStore&lt;Uint8Array&gt;(),
+  idKey: docKey,
+});
+
+for (const url of ukDestinationUrls) {
+  const granularChunks = await granularSplitter.splitDocuments(await loadAsTextDocs(url));
+
+  const expandedItems: [string, Document][] = granularChunks.map((chunk, i) =&gt; {
+    // 取前一块、当前块、后一块（注意首尾边界）
+    const neighbours = granularChunks.slice(Math.max(i - 1, 0), i + 2);
+    const id = uuidv4();
+    chunk.metadata[docKey] = id;                               // 细块指向它的扩展块
+    return [id, new Document({ pageContent: neighbours.map((c) =&gt; c.pageContent).join("\n") })];
+  });
+
+  await expansionRetriever.vectorstore.addDocuments(granularChunks);   // 细块 → 向量库
+  await expansionRetriever.docstore.mset(expandedItems);               // 扩展块 → 文档库
+}
+
+const retrievedDocs = await expansionRetriever.invoke("Cornwall Ranger");
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 还是 MultiVectorIndex：这次「父块」是扩展块，「代理」是细块本身。
+var expansionIndex = new MultiVectorIndex(granularStore, embeddingModel);
+var granularSplitter = DocumentSplitters.recursive(500, 0);
+
+for (String url : ukDestinationUrls) {
+    List&lt;String&gt; chunks = granularSplitter.split(loadAsTextDoc(url)).stream()
+            .map(TextSegment::text).toList();
+
+    for (int i = 0; i &lt; chunks.size(); i++) {
+        // 取前一块、当前块、后一块（注意首尾边界）
+        String expanded = String.join("\n",
+                chunks.subList(Math.max(i - 1, 0), Math.min(i + 2, chunks.size())));
+        expansionIndex.add(expanded, List.of(chunks.get(i)));
+    }
+}
+
+System.out.println(expansionIndex.retrieve("Cornwall Ranger", 4).get(0));
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 仓库原代码里的一个小瑕疵</div>
+  <p>
+    Notebook 中判断是否有前一块用的是 <code>if previous_chunk_num:</code>。当 <code>previous_chunk_num</code> 为 <code>0</code> 时，
+    Python 会把它当成「假」，于是第 1 块（下标 1）的扩展块会漏掉第 0 块。上面改用切片 <code>[max(i-1, 0): i+2]</code> 避开了这个问题 ——
+    这也是 Python 里「用 0 当布尔值」的经典陷阱。
+  </p>
+</div>
+
+<h2 id="semi">表格和图片怎么办</h2>
+
+<h3>半结构化内容：文字里夹着表格</h3>
+
+<p>
+  PDF 和网页里经常是「几段文字 + 一张表格」。把表格当普通文字切块，行列关系就全乱了。更好的做法是<strong>分开处理</strong>：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 190" role="img" aria-label="半结构化内容：文字照常切块嵌入，表格用 LLM 生成摘要后嵌入摘要，原表格存入文档库">
+  <rect class="bx" x="20" y="60" width="110" height="70" rx="8"/>
+  <text class="lbl" x="75" y="90" text-anchor="middle">PDF / 网页</text><text class="sm" x="75" y="110" text-anchor="middle">文字 + 表格</text>
+  <rect class="bx-b" x="180" y="20" width="130" height="50" rx="8"/><text class="lbl on-b" x="245" y="50" text-anchor="middle">文字段落</text>
+  <rect class="bx-a" x="180" y="120" width="130" height="50" rx="8"/><text class="lbl on-a" x="245" y="150" text-anchor="middle">表格</text>
+  <path class="ln" d="M132 84 L176 50" marker-end="url(#ar)"/><path class="ln" d="M132 106 L176 140" marker-end="url(#ar)"/>
+  <text class="sm" x="150" y="100" text-anchor="middle">拆分</text>
+  <rect class="bx" x="360" y="20" width="130" height="50" rx="8"/><text class="sm" x="425" y="50" text-anchor="middle">照常切块</text>
+  <rect class="bx" x="360" y="120" width="130" height="50" rx="8"/><text class="sm" x="425" y="142" text-anchor="middle">LLM 写一段</text><text class="sm" x="425" y="158" text-anchor="middle">「这张表讲了什么」</text>
+  <path class="ln" d="M312 45 H356" marker-end="url(#ar)"/><path class="ln" d="M312 145 H356" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="560" y="20" width="180" height="60" rx="8"/><text class="lbl on-p" x="650" y="46" text-anchor="middle">向量库</text><text class="sm" x="650" y="66" text-anchor="middle">文字块 + 表格摘要</text>
+  <rect class="bx-g" x="560" y="110" width="180" height="60" rx="8"/><text class="lbl on-g" x="650" y="136" text-anchor="middle">文档库</text><text class="sm" x="650" y="156" text-anchor="middle">完整的原始表格</text>
+  <path class="ln" d="M492 45 H556" marker-end="url(#ar)"/><path class="ln" d="M492 135 L556 62" marker-end="url(#ar)"/>
+  <path class="ln-d" d="M312 160 H340 V182 H530 V150 H556" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 8-5　表格：嵌入它的摘要，返回它的原貌 —— 又是「多向量」套路</figcaption>
+</figure>
+
+<p>拆分文字和表格可以用 <code>unstructured</code> 这类文档解析库。如果表格数据量大、需要精确的数值计算，更好的归宿是关系数据库，用第 10 章的 Text-to-SQL 来查。</p>
+
+<h3>多模态 RAG：资料里有图</h3>
+
+<p>当文档里有示意图、图表、照片时，常见的做法同样是「用文字代理去找，把原图交出去」：</p>
+<ol>
+  <li><strong>入库</strong>：用多模态模型为每张图片生成一段文字描述，嵌入这段描述；原图存入文档库。</li>
+  <li><strong>检索</strong>：问题与描述文字做语义匹配，取回对应的原图。</li>
+  <li><strong>生成</strong>：把问题、相关文字和<strong>原图</strong>一起发给多模态模型作答。</li>
+</ol>
+<p>另一条路是使用能把图片和文字映射到同一个向量空间的<strong>多模态嵌入模型</strong>，直接对图片做向量化。</p>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>基础 RAG 的问题可以归为六类；本章解决第一类：<strong>检索到的块不对或不完整</strong>。</li>
+  <li>块大小是两难：小块匹配准但上下文少，大块上下文足但匹配被稀释。</li>
+  <li>切分可以按文档结构（标题），也可以按大小（token、字符、递归）。最优方案只能靠实测。</li>
+  <li>核心套路是<strong>把「匹配」和「阅读」拆开</strong>：向量库存小的代理，文档库存大的父块，用 ID 关联。</li>
+  <li>四种变体：父子块、摘要嵌入、假设问题嵌入、细块扩展。前者和后者入库便宜，中间两种要为每块调用 LLM。</li>
+  <li><code>with_structured_output</code> 让模型直接返回结构化对象。</li>
+  <li>表格和图片同样适用这个套路：嵌入它们的文字描述，返回原始内容。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>对同一个问题分别查细块集合和粗块集合，把结果并排打印。哪一边你觉得更适合交给模型？</li>
+    <li>用父子块检索器和「只查子块」两种方式各搭一条完整的 RAG 链，问 "What is a Cornwall Ranger ticket and where can I use it?"，比较答案。</li>
+    <li>打印 LLM 为某个块生成的 4 个假设问题。它们和你会问的问题像不像？</li>
+    <li>把细块扩展从「前后各 1 块」改成「前后各 2 块」，观察返回内容的长度和相关性。</li>
+    <li>估算一下：如果你的知识库有 10 万个粗块，用摘要嵌入入库大约要花多少钱？（提示：每块约 750 token 输入）</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

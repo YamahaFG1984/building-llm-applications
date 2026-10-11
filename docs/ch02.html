@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 2 章 · 用代码执行提示词 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="2">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 2 章</span>
+<h1>用代码执行提示词</h1>
+<p class="lede">
+  在聊天窗口里打字和在程序里调用模型，背后是同一件事：发一段提示词，收一段回答。
+  这一章先把这层窗户纸捅破，然后系统地学习<strong>怎么写提示词才能得到想要的结果</strong> —— 这是后面所有章节的基本功。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>不借助任何框架，直接调用 OpenAI 的 API</li>
+    <li>理解 system / user / assistant 三种消息角色</li>
+    <li>用模板管理提示词，而不是到处拼字符串</li>
+    <li>认识六类常见提示词任务</li>
+    <li>掌握少样本学习（few-shot）和思维链（Chain of Thought）</li>
+    <li>记住一份好提示词的八个组成部分</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="raw">不用框架，直接调 API</h2>
+
+<p>
+  先看看「裸」的调用长什么样。理解了这一层，你就知道 LangChain 封装掉的是什么，出问题时也知道该往哪里查。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="一次 API 调用的请求和响应结构">
+  <rect class="bx" x="20" y="24" width="300" height="196" rx="10"/>
+  <text class="ttl" x="36" y="48">请求 Request</text>
+  <text class="mono" x="36" y="74">model: "gpt-5-nano"</text>
+  <text class="mono" x="36" y="96">messages: [</text>
+  <rect class="bx-p" x="50" y="106" width="254" height="30" rx="6"/>
+  <text class="mono on-p" x="60" y="126">system: "You are a helpful..."</text>
+  <rect class="bx-b" x="50" y="142" width="254" height="30" rx="6"/>
+  <text class="mono on-b" x="60" y="162">user: "Write a message..."</text>
+  <text class="mono" x="36" y="196">]</text>
+
+  <path class="ln-a" d="M322 100 H436" marker-end="url(#ar-a)"/>
+  <text class="sm" x="379" y="92" text-anchor="middle">HTTPS POST</text>
+  <path class="ln" d="M436 150 H326" marker-end="url(#ar)"/>
+  <text class="sm" x="379" y="168" text-anchor="middle">JSON</text>
+
+  <rect class="bx" x="440" y="24" width="300" height="196" rx="10"/>
+  <text class="ttl" x="456" y="48">响应 Response</text>
+  <text class="mono" x="456" y="74">choices: [ {</text>
+  <rect class="bx-g" x="470" y="84" width="254" height="48" rx="6"/>
+  <text class="mono on-g" x="480" y="104">message.role: "assistant"</text>
+  <text class="mono on-g" x="480" y="122">message.content: "Stay alert..."</text>
+  <text class="mono" x="456" y="152">} ]</text>
+  <text class="mono" x="456" y="176">usage: { prompt_tokens: 27,</text>
+  <text class="mono" x="456" y="194">  completion_tokens: 58 }</text>
+  <text class="sm" x="456" y="212">↑ 按这个数字计费</text>
+</svg>
+<figcaption>图 2-1　一次模型调用，本质上就是一个 HTTP 请求</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from openai import OpenAI          # pip install openai
+import getpass
+
+OPENAI_API_KEY = getpass.getpass('Enter your OPENAI_API_KEY')
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+prompt_input = """Write a concise message to remind users
+to be vigilant about phishing attacks."""
+
+response = client.chat.completions.create(
+  model="gpt-5-nano",
+  messages=[
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": prompt_input}
+  ]
+)
+
+print(response.choices[0].message.content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import OpenAI from "openai";       // npm install openai
+
+const client = new OpenAI();       // 自动读取 OPENAI_API_KEY
+
+const promptInput = `Write a concise message to remind users
+to be vigilant about phishing attacks.`;
+
+const response = await client.chat.completions.create({
+  model: "gpt-5-nano",
+  messages: [
+    { role: "system", content: "You are a helpful assistant." },
+    { role: "user", content: promptInput },
+  ],
+});
+
+console.log(response.choices[0].message.content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 这里故意只用 JDK 自带的 HttpClient，让你看清楚它就是一个 POST 请求。
+import java.net.URI;
+import java.net.http.*;
+
+String body = """
+        {
+          "model": "gpt-5-nano",
+          "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Write a concise message to remind users to be vigilant about phishing attacks."}
+          ]
+        }""";
+
+HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create("https://api.openai.com/v1/chat/completions"))
+        .header("Authorization", "Bearer " + System.getenv("OPENAI_API_KEY"))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(body))
+        .build();
+
+HttpResponse&lt;String&gt; response = HttpClient.newHttpClient()
+        .send(request, HttpResponse.BodyHandlers.ofString());
+
+System.out.println(response.body());   // 一段 JSON，正文在 choices[0].message.content
+</pre>
+</div>
+</div>
+
+<h3>三种消息角色</h3>
+
+<div class="tw">
+<table>
+  <tr><th>角色</th><th>谁在说话</th><th>用来做什么</th></tr>
+  <tr><td><code>system</code></td><td>开发者</td><td>给模型定规矩：你是谁、该怎么回答、不能做什么。用户通常看不到它。</td></tr>
+  <tr><td><code>user</code>（human）</td><td>用户</td><td>用户的提问或指令。</td></tr>
+  <tr><td><code>assistant</code>（ai）</td><td>模型</td><td>模型之前的回答。多轮对话时要把它们放回 <code>messages</code> 里。</td></tr>
+</table>
+</div>
+
+<h3>同一件事，用 LangChain 写</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-5-nano")
+
+response = llm.invoke(prompt_input)
+print(response.content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { ChatOpenAI } from "@langchain/openai";
+
+const llm = new ChatOpenAI({ model: "gpt-5-nano" });
+
+const response = await llm.invoke(promptInput);
+console.log(response.content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.model.openai.OpenAiChatModel;
+
+var llm = OpenAiChatModel.builder()
+        .apiKey(System.getenv("OPENAI_API_KEY"))
+        .modelName("gpt-5-nano")
+        .build();
+
+System.out.println(llm.chat(promptInput));
+</pre>
+</div>
+</div>
+
+<p>
+  代码短了，但更重要的是：把 <code>ChatOpenAI</code> 换成 <code>ChatAnthropic</code> 或 <code>ChatOllama</code>，
+  下面的代码<strong>一行都不用改</strong>。这就是统一接口的价值。
+</p>
+
+<h2 id="template">提示词模板</h2>
+
+<h3>最朴素的做法：一个函数</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+def generate_text_summary_prompt(text, num_words, tone):
+    return (f"You are an experienced copywriter. Write a {num_words} words "
+            f"summary of the following text, using a {tone} tone: {text}")
+
+input_prompt = generate_text_summary_prompt(
+    text=segovia_aqueduct_text, num_words=20, tone="knowledgeable and engaging")
+
+print(llm.invoke(input_prompt).content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+function generateTextSummaryPrompt(text: string, numWords: number, tone: string) {
+  return `You are an experienced copywriter. Write a ${numWords} words ` +
+         `summary of the following text, using a ${tone} tone: ${text}`;
+}
+
+const inputPrompt = generateTextSummaryPrompt(
+  segoviaAqueductText, 20, "knowledgeable and engaging");
+
+console.log((await llm.invoke(inputPrompt)).content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+static String generateTextSummaryPrompt(String text, int numWords, String tone) {
+    return "You are an experienced copywriter. Write a %d words summary of the following text, using a %s tone: %s"
+            .formatted(numWords, tone, text);
+}
+
+String inputPrompt = generateTextSummaryPrompt(
+        segoviaAqueductText, 20, "knowledgeable and engaging");
+
+System.out.println(llm.chat(inputPrompt));
+</pre>
+</div>
+</div>
+
+<p>
+  这完全能用。那为什么还需要框架提供的 <code>PromptTemplate</code>？因为它是一块<strong>标准积木</strong>：
+  能接进链里、能被 LangSmith 追踪、能被序列化保存、能自动校验「你是不是漏填了某个变量」。
+  用法第 1 章已经见过：
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_core.prompts import PromptTemplate
+
+prompt_template = PromptTemplate.from_template(
+    """You are an experienced copywriter.
+Write a {num_words} words summary of the following text,
+using a {tone} tone: {text}""")
+
+prompt = prompt_template.format(
+    text=segovia_aqueduct_text, num_words=20, tone="knowledgeable and engaging")
+
+print(llm.invoke(prompt).content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { PromptTemplate } from "@langchain/core/prompts";
+
+const promptTemplate = PromptTemplate.fromTemplate(
+  `You are an experienced copywriter.
+Write a {num_words} words summary of the following text,
+using a {tone} tone: {text}`);
+
+const prompt = await promptTemplate.format({
+  text: segoviaAqueductText, num_words: 20, tone: "knowledgeable and engaging" });
+
+console.log((await llm.invoke(prompt)).content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.model.input.PromptTemplate;
+import java.util.Map;
+
+PromptTemplate promptTemplate = PromptTemplate.from("""
+        You are an experienced copywriter.
+        Write a {{num_words}} words summary of the following text,
+        using a {{tone}} tone: {{text}}""");
+
+String prompt = promptTemplate.apply(Map.of(
+        "text", segoviaAqueductText, "num_words", 20,
+        "tone", "knowledgeable and engaging")).text();
+
+System.out.println(llm.chat(prompt));
+</pre>
+</div>
+</div>
+
+<h2 id="types">六类常见的提示词任务</h2>
+
+<p>绝大多数提示词都可以归到下面六类里。认识它们，是为了在遇到新需求时能快速对号入座。</p>
+
+<div class="tw">
+<table>
+  <tr><th>类型</th><th>让模型做什么</th><th>提示词示例</th></tr>
+  <tr><td>文本分类</td><td>把文本归入预先给定的类别</td><td>把下面这条新闻归为「体育 / 财经 / 科技 / 娱乐」之一：……</td></tr>
+  <tr><td>情感分析</td><td>判断语气是正面、负面还是中性</td><td>这条评价的情绪是正面还是负面？「等了一小时才上菜」</td></tr>
+  <tr><td>文本摘要</td><td>压缩长文本，保留要点</td><td>用三句话总结下面这篇文章：……</td></tr>
+  <tr><td>文本撰写</td><td>按要求写新内容</td><td>写一封 100 字的邮件，提醒同事注意钓鱼攻击，语气友好</td></tr>
+  <tr><td>问答</td><td>根据给定材料回答问题</td><td>阅读下面的文字后回答：塞哥维亚水道桥有多少个拱？</td></tr>
+  <tr><td>推理</td><td>做逻辑或数学推导</td><td>我有 5 个苹果，吃了 2 个又买了 4 个，现在有几个？请一步步算。</td></tr>
+</table>
+</div>
+
+<p>前五类，现在的模型基本「说清楚就能做好」。最容易翻车的是<strong>推理</strong>，所以下面单独展开。</p>
+
+<h2 id="fewshot">教模型推理：从零样本到少样本</h2>
+
+<p>
+  假设我们发明了一个模型肯定没见过的规则，看看怎么把它教会：
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; Abra Kadabra 规则</div>
+  <p>
+    一个数能被 5 整除叫 <strong>Abra</strong>，能被 7 整除叫 <strong>Kadabra</strong>，
+    同时能被 5 和 7 整除叫 <strong>Abra Kadabra</strong>，都不能则是 <strong>None</strong>。
+  </p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="四种教法：零样本、单样本、少样本、少样本加推理过程，可靠性依次上升">
+  <path class="ln" d="M30 226 H740" marker-end="url(#ar)"/>
+  <text class="sm" x="740" y="244" text-anchor="end">给的线索越多，回答越可靠 →</text>
+
+  <rect class="bx" x="24" y="96" width="160" height="114" rx="10"/>
+  <text class="ttl" x="104" y="120" text-anchor="middle">零样本</text>
+  <text class="sm" x="104" y="138" text-anchor="middle">Zero-shot</text>
+  <text class="sm" x="104" y="166" text-anchor="middle">只给指令，不给例子</text>
+  <text class="sm on-r" x="104" y="194" text-anchor="middle">模型不知道规则，只能猜</text>
+
+  <rect class="bx-b" x="204" y="74" width="160" height="136" rx="10"/>
+  <text class="ttl on-b" x="284" y="98" text-anchor="middle">单样本 / 双样本</text>
+  <text class="sm" x="284" y="116" text-anchor="middle">One-shot / Two-shot</text>
+  <text class="mono" x="284" y="146" text-anchor="middle">15 → Abra</text>
+  <text class="mono" x="284" y="164" text-anchor="middle">21 → Kadabra</text>
+  <text class="sm" x="284" y="194" text-anchor="middle">例子太少，规律猜不全</text>
+
+  <rect class="bx-g" x="384" y="50" width="160" height="160" rx="10"/>
+  <text class="ttl on-g" x="464" y="74" text-anchor="middle">少样本</text>
+  <text class="sm" x="464" y="92" text-anchor="middle">Few-shot</text>
+  <text class="mono" x="464" y="118" text-anchor="middle">6 → None</text>
+  <text class="mono" x="464" y="134" text-anchor="middle">15 → Abra</text>
+  <text class="mono" x="464" y="150" text-anchor="middle">21 → Kadabra</text>
+  <text class="mono" x="464" y="166" text-anchor="middle">70 → Abra Kadabra</text>
+  <text class="sm" x="464" y="194" text-anchor="middle">每种情况都覆盖到</text>
+
+  <rect class="bx-a" x="564" y="22" width="176" height="188" rx="10"/>
+  <text class="ttl on-a" x="652" y="46" text-anchor="middle">少样本 + 推理过程</text>
+  <text class="sm" x="652" y="64" text-anchor="middle">Few-shot + Chain of Thought</text>
+  <text class="mono" x="652" y="94" text-anchor="middle">15</text>
+  <text class="sm" x="652" y="110" text-anchor="middle">能被 5 整除，不能被 7 整除</text>
+  <text class="mono" x="652" y="126" text-anchor="middle">→ Abra</text>
+  <text class="sm" x="652" y="158" text-anchor="middle">不仅给答案，</text>
+  <text class="sm" x="652" y="176" text-anchor="middle">还演示「怎么想出来的」</text>
+  <text class="sm on-a" x="652" y="198" text-anchor="middle">最可靠</text>
+</svg>
+<figcaption>图 2-2　在提示词里放例子，叫「上下文学习」—— 不用训练就能教会模型新规则</figcaption>
+</figure>
+
+<h3>手写的少样本提示词</h3>
+
+<div class="code" data-lang="prompt">
+<pre>
+Classify the following numbers as Abra, Kadabra or Abra Kadabra:
+
+3, 4, 5, 7, 8, 10, 11, 13, 35
+
+Examples:
+6 // not divisible by 5, not divisible by 7 // None
+15 // divisible by 5, not divisible by 7 // Abra
+12 // not divisible by 5, not divisible by 7 // None
+21 // not divisible by 5, divisible by 7 // Kadabra
+70 // divisible by 5, divisible by 7 // Abra Kadabra
+</pre>
+</div>
+
+<p>每个例子有三段：<em>输入 // 推理过程 // 结论</em>。中间那段推理过程正是关键 —— 没有它，模型只能看到「15 是 Abra」，猜不出为什么。</p>
+
+<h3>用 FewShotPromptTemplate 管理例子</h3>
+
+<p>
+  例子多了以后，硬编码在字符串里不好维护。把例子抽成<strong>数据</strong>，把「一个例子长什么样」抽成<strong>小模板</strong>，再由框架拼起来：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="FewShotPromptTemplate 把例子列表、例子模板和后缀拼成最终提示词">
+  <rect class="bx-b" x="20" y="20" width="244" height="74" rx="8"/>
+  <text class="ttl on-b" x="142" y="42" text-anchor="middle">examples（数据）</text>
+  <text class="mono" x="34" y="62">{number: 15, reasoning:</text>
+  <text class="mono" x="34" y="80"> "...", result: "Abra"} ...</text>
+  <rect class="bx-g" x="20" y="108" width="244" height="40" rx="8"/>
+  <text class="ttl on-g" x="142" y="124" text-anchor="middle">example_prompt</text>
+  <text class="mono" x="142" y="141" text-anchor="middle">{number} \ {reasoning} \ {result}</text>
+  <rect class="bx-p" x="20" y="162" width="244" height="34" rx="8"/>
+  <text class="ttl on-p" x="142" y="184" text-anchor="middle">suffix（真正的任务）</text>
+
+  <path class="ln" d="M266 57 H386 V100" marker-end="url(#ar)"/>
+  <path class="ln" d="M266 128 H294" marker-end="url(#ar)"/>
+  <path class="ln" d="M266 179 H386 V156" marker-end="url(#ar)"/>
+
+  <rect class="bx-a" x="298" y="104" width="176" height="48" rx="10"/>
+  <text class="lbl on-a" x="386" y="126" text-anchor="middle" style="font-weight:700">FewShotPromptTemplate</text>
+  <text class="sm" x="386" y="143" text-anchor="middle">.format(...)</text>
+  <path class="ln-a" d="M476 128 H490" marker-end="url(#ar-a)"/>
+
+  <rect class="bx" x="494" y="30" width="250" height="166" rx="8"/>
+  <text class="sm" x="506" y="50">最终提示词</text>
+  <text class="mono" x="506" y="74">6 \ not divisible... \ None</text>
+  <text class="mono" x="506" y="92">15 \ divisible by 5... \ Abra</text>
+  <text class="mono" x="506" y="110">12 \ not divisible... \ None</text>
+  <text class="mono" x="506" y="128">21 \ divisible by 7... \ Kadabra</text>
+  <text class="mono" x="506" y="146">70 \ ... \ Abra Kadabra</text>
+  <text class="mono on-p" x="506" y="172">Classify the following</text>
+  <text class="mono on-p" x="506" y="188">numbers ...: 3, 4, 5, 7 ...</text>
+</svg>
+<figcaption>图 2-3　例子是数据，模板是格式，两者分开才好维护</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_core.prompts.few_shot import FewShotPromptTemplate
+from langchain_core.prompts.prompt import PromptTemplate
+
+examples = [
+  {"number": 6,  "reasoning": "not divisible by 5 nor by 7", "result": "None"},
+  {"number": 15, "reasoning": "divisible by 5 but not by 7", "result": "Abra"},
+  {"number": 12, "reasoning": "not divisible by 5 nor by 7", "result": "None"},
+  {"number": 21, "reasoning": "divisible by 7 but not by 5", "result": "Kadabra"},
+  {"number": 70, "reasoning": "divisible by 5 and by 7",     "result": "Abra Kadabra"},
+]
+
+example_prompt = PromptTemplate(
+    input_variables=["number", "reasoning", "result"],
+    template="{number} \\ {reasoning} \\ {result}")
+
+few_shot_prompt = FewShotPromptTemplate(
+    examples=examples,
+    example_prompt=example_prompt,
+    suffix="Classify the following numbers as Abra, Kadabra or Abra Kadabra: "
+           "{comma_delimited_input_numbers}",
+    input_variables=["comma_delimited_input_numbers"])
+
+prompt_input = few_shot_prompt.format(
+    comma_delimited_input_numbers="3, 4, 5, 7, 8, 10, 11, 13, 35.")
+
+llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-5-mini")
+print(llm.invoke(prompt_input).content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { FewShotPromptTemplate, PromptTemplate } from "@langchain/core/prompts";
+import { ChatOpenAI } from "@langchain/openai";
+
+const examples = [
+  { number: "6",  reasoning: "not divisible by 5 nor by 7", result: "None" },
+  { number: "15", reasoning: "divisible by 5 but not by 7", result: "Abra" },
+  { number: "12", reasoning: "not divisible by 5 nor by 7", result: "None" },
+  { number: "21", reasoning: "divisible by 7 but not by 5", result: "Kadabra" },
+  { number: "70", reasoning: "divisible by 5 and by 7",     result: "Abra Kadabra" },
+];
+
+const examplePrompt = PromptTemplate.fromTemplate("{number} \\ {reasoning} \\ {result}");
+
+const fewShotPrompt = new FewShotPromptTemplate({
+  examples,
+  examplePrompt,
+  suffix: "Classify the following numbers as Abra, Kadabra or Abra Kadabra: " +
+          "{comma_delimited_input_numbers}",
+  inputVariables: ["comma_delimited_input_numbers"],
+});
+
+const promptInput = await fewShotPrompt.format({
+  comma_delimited_input_numbers: "3, 4, 5, 7, 8, 10, 11, 13, 35.",
+});
+
+const llm = new ChatOpenAI({ model: "gpt-5-mini" });
+console.log((await llm.invoke(promptInput)).content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// LangChain4j 没有专门的 FewShotPromptTemplate —— 也不需要，
+// 「例子是数据、模板是格式」这个思路用几行 Java 就能表达。
+import dev.langchain4j.model.input.PromptTemplate;
+import java.util.*;
+import java.util.stream.Collectors;
+
+record Example(int number, String reasoning, String result) {}
+
+List&lt;Example&gt; examples = List.of(
+        new Example(6,  "not divisible by 5 nor by 7", "None"),
+        new Example(15, "divisible by 5 but not by 7", "Abra"),
+        new Example(12, "not divisible by 5 nor by 7", "None"),
+        new Example(21, "divisible by 7 but not by 5", "Kadabra"),
+        new Example(70, "divisible by 5 and by 7",     "Abra Kadabra"));
+
+PromptTemplate examplePrompt = PromptTemplate.from("{{number}} \\ {{reasoning}} \\ {{result}}");
+
+String examplesText = examples.stream()
+        .map(e -&gt; examplePrompt.apply(Map.of(
+                "number", e.number(), "reasoning", e.reasoning(), "result", e.result())).text())
+        .collect(Collectors.joining("\n\n"));
+
+PromptTemplate fewShotPrompt = PromptTemplate.from("""
+        {{examples}}
+
+        Classify the following numbers as Abra, Kadabra or Abra Kadabra: {{numbers}}""");
+
+String promptInput = fewShotPrompt.apply(Map.of(
+        "examples", examplesText,
+        "numbers", "3, 4, 5, 7, 8, 10, 11, 13, 35.")).text();
+
+var llm = OpenAiChatModel.builder()
+        .apiKey(System.getenv("OPENAI_API_KEY")).modelName("gpt-5-mini").build();
+System.out.println(llm.chat(promptInput));
+</pre>
+</div>
+</div>
+
+<h3>另外两招：给步骤、让它「想出声」</h3>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">给出步骤（Providing steps）</div>
+    <div class="code" data-lang="prompt"><pre>
+对下面每个数字，按这些步骤处理：
+1. 检查能否被 5 整除
+2. 检查能否被 7 整除
+3. 都能 → Abra Kadabra
+   只能被 5 → Abra
+   只能被 7 → Kadabra
+   都不能 → None
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">思维链（Chain of Thought）</div>
+    <div class="code" data-lang="prompt"><pre>
+……（规则说明）……
+
+请一步一步地思考，
+先写出你对每个数字的
+推理过程，
+最后再给出结论。
+</pre></div>
+  </div>
+</div>
+
+<div class="box deep">
+  <div class="t">&#128300; 为什么「一步一步想」会有用</div>
+  <p>
+    模型是一个词一个词往外写的，写后面的词时能「看到」自己前面写了什么。
+    如果它先把推理过程写出来，这些中间结论就成了后续生成的依据；如果直接让它蹦答案，它就只能凭直觉猜。
+    现在的<strong>推理型模型</strong>（比如 GPT-5 Thinking）把这个过程内置了：它会在给出答案前先在内部「打草稿」，所以对它们不必再手动加这句话。
+  </p>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th>技巧</th><th>做法</th><th>适合什么时候</th></tr>
+  <tr><td>零样本</td><td>只给指令</td><td>任务常见、模型本来就会</td></tr>
+  <tr><td>单样本 / 双样本</td><td>给 1–2 个例子</td><td>主要想示范<strong>输出格式</strong></td></tr>
+  <tr><td>少样本</td><td>给一组覆盖各种情况的例子</td><td>规则是你自定义的、模型没见过</td></tr>
+  <tr><td>给出步骤</td><td>把处理流程一条条写出来</td><td>你清楚地知道该怎么做</td></tr>
+  <tr><td>思维链</td><td>要求先推理再回答</td><td>多步计算或逻辑推导</td></tr>
+</table>
+</div>
+
+<h2 id="structure">一份好提示词的结构</h2>
+
+<p>把前面的经验合在一起，就得到一份通用的<strong>检查清单</strong>。不是每一项都必须有，但写提示词时可以对着过一遍：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="提示词的八个组成部分">
+  <rect class="bx-p" x="20" y="16" width="350" height="60" rx="8"/>
+  <text class="ttl on-p" x="36" y="40">① 角色 Persona</text>
+  <text class="sm" x="36" y="60">你希望模型扮演谁：资深文案、科幻作家、代码审查员</text>
+  <rect class="bx-b" x="390" y="16" width="350" height="60" rx="8"/>
+  <text class="ttl on-b" x="406" y="40">② 背景 Context</text>
+  <text class="sm" x="406" y="60">这件事的来龙去脉，越具体越好</text>
+
+  <rect class="bx-a" x="20" y="88" width="350" height="60" rx="8"/>
+  <text class="ttl on-a" x="36" y="112">③ 指令 Instruction</text>
+  <text class="sm" x="36" y="132">明确的动作：翻译、改写、分类、排序、查找……</text>
+  <rect class="bx" x="390" y="88" width="350" height="60" rx="8"/>
+  <text class="ttl" x="406" y="112">④ 输入 Input</text>
+  <text class="sm" x="406" y="132">要处理的材料，最好加上「Text:」「Question:」之类的标签</text>
+
+  <rect class="bx" x="20" y="160" width="350" height="60" rx="8"/>
+  <text class="ttl" x="36" y="184">⑤ 步骤 Steps</text>
+  <text class="sm" x="36" y="204">希望模型遵循的处理流程</text>
+  <rect class="bx-g" x="390" y="160" width="350" height="60" rx="8"/>
+  <text class="ttl on-g" x="406" y="184">⑥ 语气 Tone</text>
+  <text class="sm" x="406" y="204">正式、口语、幽默、克制、热情……</text>
+
+  <rect class="bx-g" x="20" y="232" width="350" height="60" rx="8"/>
+  <text class="ttl on-g" x="36" y="256">⑦ 输出格式 Output format</text>
+  <text class="sm" x="36" y="276">纯文本、表格、CSV、JSON（写明字段名）</text>
+  <rect class="bx-b" x="390" y="232" width="350" height="60" rx="8"/>
+  <text class="ttl on-b" x="406" y="256">⑧ 示例 Examples</text>
+  <text class="sm" x="406" y="276">分类和推理任务尤其需要</text>
+</svg>
+<figcaption>图 2-4　提示词的八个零件</figcaption>
+</figure>
+
+<p>一个把多数零件都用上的例子：</p>
+
+<div class="code" data-lang="prompt">
+<pre>
+PERSONA  You're an experienced Large Language Model (LLM) developer and renowned speaker.
+CONTEXT  You've been invited to give a keynote speech for a LLM event.
+INSTRUCTION  Write the punch lines for the speech.
+INPUT  Include the following facts:
+  - LLMs have become mainstream with the launch of ChatGPT in November 2022
+  - many popular LLMs and LLM based chatbots have been launched since then
+  - LLMs becoming as popular as search engines
+  - many companies want to integrate LLMs in their applications
+TONE  Use a witty but entertaining tone.
+OUTPUT FORMAT  Present the text in two paragraphs of 5 lines each.
+</pre>
+</div>
+
+<h3>更稳妥的写法：用 XML 标签分段</h3>
+
+<p>
+  OpenAI 和 Anthropic 的官方提示词指南都推荐用类似 XML 的标签把各部分包起来。
+  这样模型不容易把「要处理的材料」误当成「要执行的指令」—— 当输入里包含用户提供的、内容不可控的文本时尤其重要。
+</p>
+
+<div class="code" data-lang="xml">
+<pre>
+&lt;Persona&gt;
+You're an experienced Large Language Model (LLM) developer and renowned speaker.
+&lt;/Persona&gt;
+&lt;Context&gt;
+You've been invited to give a keynote speech for a LLM event.
+&lt;/Context&gt;
+&lt;Instruction&gt;
+Write the punch lines for the speech.
+&lt;/Instruction&gt;
+&lt;Input&gt;
+Include the following facts: ...
+&lt;/Input&gt;
+&lt;Tone&gt;
+Use a witty but entertaining tone.
+&lt;/Tone&gt;
+&lt;OutputFormat&gt;
+Present the text in two paragraphs of 5 lines each.
+&lt;/OutputFormat&gt;
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 不必每一段都起名字</div>
+  <p>
+    研究发现给提示词各部分显式命名通常能改善结果，但模型一般也能自己看出每段文字的用途。
+    实践中常见的做法是只给关键部分加标签（比如 <code>Question</code>、<code>Examples</code>、<code>Context</code>），其余的自然书写。
+    多试几种写法，以实际效果为准。
+  </p>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>调用 LLM 就是发一个带 <code>messages</code> 列表的 HTTP 请求；消息有 system、user、assistant 三种角色。</li>
+  <li>LangChain（及 LangChain.js、LangChain4j）把各家模型包成统一接口，换模型不用改业务代码。</li>
+  <li>提示词模板把「固定文字」和「可变参数」分开，是可以接进链里的标准积木。</li>
+  <li>常见任务有六类：分类、情感分析、摘要、撰写、问答、推理。</li>
+  <li>教模型新规则靠<strong>上下文学习</strong>：给例子（few-shot）、给步骤、让它先推理再回答（CoT）。</li>
+  <li>提示词八要素：角色、背景、指令、输入、步骤、语气、输出格式、示例；用 XML 标签分段更稳。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>先用<strong>零样本</strong>让模型给 <code>3, 4, 5, 7, 8, 10, 11, 13, 35</code> 分类，记录它错了几个；再用少样本版本跑一次，对比结果。</li>
+    <li>把少样本例子里的 <code>reasoning</code> 字段删掉，只留数字和结论，准确率有变化吗？</li>
+    <li>用八要素清单给自己写一个提示词：让模型以「耐心的编程老师」的身份，向零基础的人解释什么是 API，输出为三个小标题加要点列表。</li>
+    <li>把第 3 题的提示词改写成 XML 标签形式，对比两个版本的输出。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

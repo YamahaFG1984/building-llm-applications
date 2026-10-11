@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 9 章 · 问题改写 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="9">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 9 章</span>
+<h1>问题改写</h1>
+<p class="lede">
+  上一章改进的是「资料怎么存」，这一章改进的是「拿什么去找」。
+  用户随口一问的句子，往往并不适合直接拿去做语义检索。办法是：<strong>先让 LLM 把问题加工一下，再去检索</strong>。
+  五种加工方式，对应五种不同的病症。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解为什么「用户的原话」常常不是好的检索查询</li>
+    <li>掌握五种问题改写技巧：查询重写、多查询、后退一步、HyDE、问题分解</li>
+    <li>看懂它们共同的代码骨架 —— 改的只是「拿去检索的那句话」</li>
+    <li>知道每种技巧适合什么场景、代价是什么</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="why">为什么要改写问题</h2>
+
+<p>
+  语义检索比较的是「问题的向量」和「文本块的向量」。但这两样东西天生不太像：
+</p>
+<ul>
+  <li>问题是<strong>疑问句</strong>，资料是<strong>陈述句</strong>；</li>
+  <li>问题里常有「帮我」「请告诉我」「好玩的」这类口语化、含糊的词，它们在资料里并不出现，却会把向量「带偏」；</li>
+  <li>一个问题可能太具体（资料里没有一模一样的细节），也可能太笼统，或者一句话里塞了好几个问题。</li>
+</ul>
+
+<p>看一个真实例子。知识库是英国旅游目的地的 Wikivoyage 页面（按 h2 小节切块），直接用原话检索：</p>
+
+<div class="code" data-lang="python">
+<pre>
+user_question = "Tell me some fun things I can enjoy in Cornwall"
+initial_results = uk_granular_collection.similarity_search(query=user_question, k=4)
+# 结果：命中的多是泛泛的介绍或不太相关的小节 ——「fun things I can enjoy」太含糊了
+</pre>
+</div>
+
+<h3>共同的骨架</h3>
+
+<p>
+  这一章的五种技巧，在代码结构上几乎一模一样。标准 RAG 链里，问题同时走两条路：一条去检索，一条进提示词。
+  问题改写<strong>只动第一条路</strong> —— 进提示词让模型作答的，始终是用户的<strong>原始问题</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="问题改写的通用结构：原始问题一路经过改写后去检索，另一路原样进入提示词">
+  <rect class="bx" x="20" y="96" width="110" height="56" rx="8"/>
+  <text class="ttl" x="75" y="120" text-anchor="middle">用户的</text><text class="ttl" x="75" y="138" text-anchor="middle">原始问题</text>
+
+  <rect class="bx-a" x="190" y="30" width="150" height="62" rx="10"/>
+  <text class="ttl on-a" x="265" y="56" text-anchor="middle">LLM 改写</text>
+  <text class="sm" x="265" y="76" text-anchor="middle">本章的五种做法都在这里</text>
+  <rect class="bx-p" x="400" y="30" width="120" height="62" rx="10"/>
+  <text class="ttl on-p" x="460" y="56" text-anchor="middle">检索器</text><text class="sm" x="460" y="76" text-anchor="middle">向量库</text>
+  <path class="ln-a" d="M132 112 L186 74" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M342 61 H396" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="369" y="22" text-anchor="middle">更好的查询</text>
+
+  <rect class="bx-g" x="570" y="86" width="90" height="76" rx="10"/>
+  <text class="ttl on-g" x="615" y="112" text-anchor="middle">RAG</text><text class="ttl on-g" x="615" y="130" text-anchor="middle">提示词</text>
+  <text class="sm" x="615" y="150" text-anchor="middle">资料 + 问题</text>
+  <path class="ln-p" d="M522 61 H552 V110 H566" marker-end="url(#ar-p)"/>
+  <text class="sm on-p" x="546" y="52" text-anchor="middle">context</text>
+  <path class="ln" d="M132 136 L186 176 H552 V140 H566" marker-end="url(#ar)"/>
+  <text class="sm" x="360" y="168" text-anchor="middle">question：原始问题原封不动（RunnablePassthrough）</text>
+
+  <rect class="bx-a" x="690" y="96" width="56" height="56" rx="8"/><text class="ttl on-a" x="718" y="129" text-anchor="middle">LLM</text>
+  <path class="ln" d="M662 124 H686" marker-end="url(#ar)"/>
+  <text class="sm" x="380" y="226" text-anchor="middle">关键：改写只影响「找资料」，不影响「回答什么」</text>
+</svg>
+<figcaption>图 9-1　五种技巧共用的结构</figcaption>
+</figure>
+
+<p>先把共用的部分准备好：模型、检索器、RAG 提示词。后面每种技巧只需要再加一条「改写链」。</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="通用脚手架">
+<pre>
+from langchain_openai import ChatOpenAI
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+
+llm = ChatOpenAI(model="gpt-5-nano", openai_api_key=OPENAI_API_KEY)
+retriever = uk_granular_collection.as_retriever()
+
+rag_prompt = ChatPromptTemplate.from_template("""
+Given a question and some context, answer the question.
+If you do not know the answer, just say I do not know.
+
+Context: {context}
+Question: {question}
+""")
+
+def make_rag_chain(search_chain):
+    """search_chain：输入原始问题，输出检索到的文档。五种技巧只是换这个参数。"""
+    return (
+        {"context": search_chain, "question": RunnablePassthrough()}
+        | rag_prompt | llm | StrOutputParser())
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="通用脚手架">
+<pre>
+import { ChatOpenAI } from "@langchain/openai";
+import { StringOutputParser } from "@langchain/core/output_parsers";
+import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { Runnable, RunnablePassthrough, RunnableSequence } from "@langchain/core/runnables";
+import type { Document } from "@langchain/core/documents";
+
+const llm = new ChatOpenAI({ model: "gpt-5-nano" });
+const retriever = ukGranularCollection.asRetriever();
+const formatDocs = (docs: Document[]) =&gt; docs.map((d) =&gt; d.pageContent).join("\n\n");
+
+const ragPrompt = ChatPromptTemplate.fromTemplate(`
+Given a question and some context, answer the question.
+If you do not know the answer, just say I do not know.
+
+Context: {context}
+Question: {question}
+`);
+
+/** searchChain：输入原始问题，输出检索到的文档。五种技巧只是换这个参数。 */
+function makeRagChain(searchChain: Runnable&lt;string, Document[]&gt;) {
+  return RunnableSequence.from([
+    { context: searchChain.pipe(formatDocs), question: new RunnablePassthrough() },
+    ragPrompt, llm, new StringOutputParser(),
+  ]);
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="通用脚手架">
+<pre>
+// 所有「让 LLM 加工问题」的提示词，集中声明在一个 AI Service 接口里（方法随各小节逐个添加）。
+interface QuestionTransformer {
+    @UserMessage("""
+            Given a question and some context, answer the question.
+            If you do not know the answer, just say I do not know.
+
+            Context: {{context}}
+            Question: {{question}}""")
+    String answer(@V("context") String context, @V("question") String question);
+}
+
+QuestionTransformer ai = AiServices.create(QuestionTransformer.class, llm);
+
+/** 用给定的查询去检索，返回拼接好的上下文 */
+static String retrieve(String searchQuery, int k) {
+    var request = EmbeddingSearchRequest.builder()
+            .queryEmbedding(embeddingModel.embed(searchQuery).content())
+            .maxResults(k).build();
+    return ukGranularStore.search(request).matches().stream()
+            .map(m -&gt; m.embedded().text())
+            .collect(Collectors.joining("\n\n"));
+}
+
+// 五种技巧的统一形状：
+//   String searchQuery = 改写(原始问题);
+//   String answer = ai.answer(retrieve(searchQuery, 4), 原始问题);
+</pre>
+</div>
+</div>
+
+<h2 id="rewrite">① 查询重写（Rewrite-Retrieve-Read）</h2>
+
+<div class="box note">
+  <div class="t">&#9432; 对症：问题口语化、啰嗦、关键词不突出</div>
+  <p>让 LLM 把用户的话改写成一条简洁、关键词明确、适合向量检索的查询。</p>
+</div>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+rewriter_prompt = ChatPromptTemplate.from_template("""
+Generate search query for the Chroma DB vector store
+from a user question, allowing for a more accurate
+response through semantic search.
+Just return the revised Chroma DB query, with quotes around it.
+
+User question: {user_question}
+Revised Chroma DB query:
+""")
+
+rewriter_chain = rewriter_prompt | llm | StrOutputParser()
+
+# 单独试一下改写效果
+print(rewriter_chain.invoke({"user_question": "Tell me some fun things I can do in Cornwall"}))
+# 可能的输出："Cornwall attractions activities things to do"
+
+# 接进 RAG：原始问题 → 改写 → 检索
+rewrite_retrieve_read_rag_chain = make_rag_chain(
+    {"user_question": RunnablePassthrough()} | rewriter_chain | retriever)
+
+print(rewrite_retrieve_read_rag_chain.invoke("Tell me some fun things I can do in Cornwall"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const rewriterPrompt = ChatPromptTemplate.fromTemplate(`
+Generate search query for the Chroma DB vector store
+from a user question, allowing for a more accurate
+response through semantic search.
+Just return the revised Chroma DB query, with quotes around it.
+
+User question: {user_question}
+Revised Chroma DB query:
+`);
+
+const rewriterChain = rewriterPrompt.pipe(llm).pipe(new StringOutputParser());
+
+// 单独试一下改写效果
+console.log(await rewriterChain.invoke({
+  user_question: "Tell me some fun things I can do in Cornwall" }));
+
+// 接进 RAG：原始问题 → 改写 → 检索
+const rewriteRetrieveReadRagChain = makeRagChain(
+  RunnableSequence.from([
+    { user_question: new RunnablePassthrough() }, rewriterChain, retriever ]));
+
+console.log(await rewriteRetrieveReadRagChain.invoke(
+  "Tell me some fun things I can do in Cornwall"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 在 QuestionTransformer 接口里添加：
+@UserMessage("""
+        Generate search query for the vector store from a user question,
+        allowing for a more accurate response through semantic search.
+        Just return the revised query.
+
+        User question: {{user_question}}
+        Revised query:""")
+String rewrite(@V("user_question") String userQuestion);
+
+// 使用
+String userQuestion = "Tell me some fun things I can do in Cornwall";
+String searchQuery = ai.rewrite(userQuestion);                    // 改写
+System.out.println(searchQuery);
+System.out.println(ai.answer(retrieve(searchQuery, 4), userQuestion));   // 检索 + 回答
+</pre>
+</div>
+</div>
+
+<div class="vs">
+  <div class="old"><div class="h">原始问题</div>
+    <p style="padding:10px 14px;margin:0;font-size:14px"><code>Tell me some fun things I can enjoy in Cornwall</code><br>→ 检索结果泛泛、不聚焦</p></div>
+  <div class="new"><div class="h">改写后的查询</div>
+    <p style="padding:10px 14px;margin:0;font-size:14px"><code>"Cornwall attractions activities things to do"</code><br>→ 命中 See、Do 等具体小节</p></div>
+</div>
+
+<h2 id="multi">② 多查询（Multi-Query）</h2>
+
+<div class="box note">
+  <div class="t">&#9432; 对症：一种问法只能覆盖一个角度；或者一个问题里其实包含好几个独立的小问题</div>
+  <p>让 LLM 从不同角度生成多条查询，分别检索，再把结果合并、去重。检索的「网」撒得更大。</p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="多查询：一个问题生成多条查询，分别检索后合并去重">
+  <rect class="bx" x="20" y="90" width="110" height="50" rx="8"/><text class="lbl" x="75" y="120" text-anchor="middle">原始问题</text>
+  <rect class="bx-a" x="170" y="90" width="80" height="50" rx="8"/><text class="lbl on-a" x="210" y="120" text-anchor="middle">LLM</text>
+  <path class="ln" d="M132 115 H166" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="300" y="16" width="190" height="32" rx="6"/><text class="sm on-b" x="395" y="37" text-anchor="middle">康沃尔有哪些户外活动？</text>
+  <rect class="bx-b" x="300" y="58" width="190" height="32" rx="6"/><text class="sm on-b" x="395" y="79" text-anchor="middle">康沃尔的热门景点是什么？</text>
+  <rect class="bx-b" x="300" y="100" width="190" height="32" rx="6"/><text class="sm on-b" x="395" y="121" text-anchor="middle">康沃尔有什么节日和庆典？</text>
+  <rect class="bx-b" x="300" y="142" width="190" height="32" rx="6"/><text class="sm on-b" x="395" y="163" text-anchor="middle">适合家庭的康沃尔游玩项目</text>
+  <rect class="bx-b" x="300" y="184" width="190" height="32" rx="6"/><text class="sm on-b" x="395" y="205" text-anchor="middle">康沃尔的海滩和水上运动</text>
+  <path class="ln" d="M252 108 L296 34" marker-end="url(#ar)"/><path class="ln" d="M252 111 L296 76" marker-end="url(#ar)"/>
+  <path class="ln" d="M252 115 H296" marker-end="url(#ar)"/><path class="ln" d="M252 119 L296 156" marker-end="url(#ar)"/>
+  <path class="ln" d="M252 122 L296 198" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="540" y="70" width="90" height="90" rx="10"/>
+  <text class="lbl on-p" x="585" y="106" text-anchor="middle">各自检索</text><text class="sm" x="585" y="126" text-anchor="middle">5 次</text>
+  <path class="ln" d="M492 32 L536 92" marker-end="url(#ar)"/><path class="ln" d="M492 74 L536 104" marker-end="url(#ar)"/>
+  <path class="ln" d="M492 116 H536" marker-end="url(#ar)"/><path class="ln" d="M492 158 L536 128" marker-end="url(#ar)"/>
+  <path class="ln" d="M492 200 L536 140" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="660" y="80" width="86" height="70" rx="10"/>
+  <text class="lbl on-g" x="703" y="110" text-anchor="middle">合并去重</text><text class="sm" x="703" y="130" text-anchor="middle">→ 上下文</text>
+  <path class="ln" d="M632 115 H656" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 9-2　多查询：换几种问法都搜一遍</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from typing import List
+from langchain_core.output_parsers import BaseOutputParser
+from langchain_classic.retrievers.multi_query import MultiQueryRetriever
+
+multi_query_gen_prompt = ChatPromptTemplate.from_template("""
+You are an AI language model assistant. Your task is to generate five different versions
+of the given user question to retrieve relevant documents from a vector database.
+By generating multiple perspectives on the user question, your goal is to help the user
+overcome some of the limitations of the distance-based similarity search.
+Provide these alternative questions separated by newlines.
+Original question: {question}
+""")
+
+class LineListOutputParser(BaseOutputParser[List[str]]):
+    """自定义解析器：模型每行输出一个问题，按行拆成列表。"""
+    def parse(self, text: str) -&gt; List[str]:
+        return list(filter(None, text.strip().split("\n")))
+
+multi_query_gen_chain = multi_query_gen_prompt | llm | LineListOutputParser()
+
+# 方式一：把自己的查询生成链交给 MultiQueryRetriever
+multi_query_retriever = MultiQueryRetriever(
+    retriever=retriever, llm_chain=multi_query_gen_chain, parser_key="lines")
+
+# 方式二：全部用默认配置，一行搞定
+std_multi_query_retriever = MultiQueryRetriever.from_llm(retriever=retriever, llm=llm)
+
+# 它本身就是一个检索器（内部已完成：生成多条查询 → 分别检索 → 合并去重）
+multi_query_rag_chain = make_rag_chain(multi_query_retriever)
+print(multi_query_rag_chain.invoke("Tell me some fun things I can do in Cornwall"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { MultiQueryRetriever } from "@langchain/classic/retrievers/multi_query";
+import { RunnableLambda } from "@langchain/core/runnables";
+
+// 方式一：全部用默认配置，一行搞定
+const stdMultiQueryRetriever = MultiQueryRetriever.fromLLM({
+  llm, retriever, queryCount: 5 });
+
+// 方式二：自己写，看清它内部做了什么
+const multiQueryGenPrompt = ChatPromptTemplate.fromTemplate(`
+You are an AI language model assistant. Your task is to generate five different versions
+of the given user question to retrieve relevant documents from a vector database.
+By generating multiple perspectives on the user question, your goal is to help the user
+overcome some of the limitations of the distance-based similarity search.
+Provide these alternative questions separated by newlines.
+Original question: {question}
+`);
+
+const multiQueryGenChain = multiQueryGenPrompt
+  .pipe(llm).pipe(new StringOutputParser())
+  .pipe((text: string) =&gt; text.trim().split("\n").filter(Boolean));   // 按行拆成列表
+
+const customMultiQueryRetriever = RunnableLambda.from(async (question: string) =&gt; {
+  const queries = await multiQueryGenChain.invoke({ question });
+  const groups = await Promise.all(queries.map((q) =&gt; retriever.invoke(q)));   // 并行检索
+  const unique = new Map(groups.flat().map((d) =&gt; [d.pageContent, d]));        // 按内容去重
+  return [...unique.values()];
+});
+
+const multiQueryRagChain = makeRagChain(customMultiQueryRetriever);
+console.log(await multiQueryRagChain.invoke("Tell me some fun things I can do in Cornwall"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 在 QuestionTransformer 接口里添加（返回 List&lt;String&gt;，框架自动解析）：
+@UserMessage("""
+        You are an AI language model assistant. Your task is to generate five different
+        versions of the given user question to retrieve relevant documents from a vector
+        database. By generating multiple perspectives on the user question, your goal is
+        to help the user overcome some of the limitations of the distance-based similarity
+        search.
+        Original question: {{question}}""")
+List&lt;String&gt; multipleQueries(@V("question") String question);
+
+// 使用：分别检索 → 合并去重
+String userQuestion = "Tell me some fun things I can do in Cornwall";
+
+String context = ai.multipleQueries(userQuestion).parallelStream()
+        .flatMap(q -&gt; searchSegments(q, 4).stream())      // searchSegments：返回 List&lt;String&gt;
+        .distinct()
+        .collect(Collectors.joining("\n\n"));
+
+System.out.println(ai.answer(context, userQuestion));
+
+// 提示：LangChain4j 内置了 ExpandingQueryTransformer，配合 DefaultRetrievalAugmentor
+// 可以把「多查询」直接挂到 AI Service 上，效果相同。
+</pre>
+</div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 这也叫「单步分解」</div>
+  <p>
+    如果原问题是「康沃尔有什么好玩的，住哪里方便，怎么过去？」，生成的多条查询就自然地把它<strong>拆成了几个独立的子问题</strong>。
+    只要子问题之间互不依赖、可以并行检索，这就够用了。互相依赖的情况见本章最后一节。
+  </p>
+</div>
+
+<h2 id="stepback">③ 后退一步（Step-Back）</h2>
+
+<div class="box note">
+  <div class="t">&#9432; 对症：问题太具体，资料里找不到一模一样的细节</div>
+  <p>让 LLM 把问题<strong>抽象一层</strong>，问一个更宽泛的问题去检索，拿回更完整的背景知识。</p>
+</div>
+
+<div class="vs">
+  <div class="old"><div class="h">具体的问题</div>
+    <p style="padding:10px 14px;margin:0;font-size:14px">Can you give me some tips for a trip to Brighton?<br><span style="color:var(--fg-faint)">资料里没有哪一段叫「tips」</span></p></div>
+  <div class="new"><div class="h">后退一步的问题</div>
+    <p style="padding:10px 14px;margin:0;font-size:14px">What should I know before traveling to a UK seaside city?<br><span style="color:var(--fg-faint)">能带回交通、住宿、安全、景点等一大片背景</span></p></div>
+</div>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+llm = ChatOpenAI(model="gpt-5", openai_api_key=OPENAI_API_KEY)   # 「抽象」需要更强一点的模型
+
+step_back_prompt = ChatPromptTemplate.from_template("""
+Generate a less specific question (aka Step-back question)
+for the following detailed question, so that a wider context
+can be retrieved.
+Detailed question: {detailed_question}
+Step-back question:
+""")
+
+step_back_question_gen_chain = step_back_prompt | llm | StrOutputParser()
+
+step_back_question_rag_chain = make_rag_chain(
+    {"detailed_question": RunnablePassthrough()}
+    | step_back_question_gen_chain | retriever)
+
+print(step_back_question_rag_chain.invoke(
+    "Can you give me some tips for a trip to Brighton?"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const strongLlm = new ChatOpenAI({ model: "gpt-5" });   // 「抽象」需要更强一点的模型
+
+const stepBackPrompt = ChatPromptTemplate.fromTemplate(`
+Generate a less specific question (aka Step-back question)
+for the following detailed question, so that a wider context
+can be retrieved.
+Detailed question: {detailed_question}
+Step-back question:
+`);
+
+const stepBackQuestionGenChain = stepBackPrompt.pipe(strongLlm).pipe(new StringOutputParser());
+
+const stepBackQuestionRagChain = makeRagChain(
+  RunnableSequence.from([
+    { detailed_question: new RunnablePassthrough() }, stepBackQuestionGenChain, retriever ]));
+
+console.log(await stepBackQuestionRagChain.invoke(
+  "Can you give me some tips for a trip to Brighton?"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 在 QuestionTransformer 接口里添加：
+@UserMessage("""
+        Generate a less specific question (aka Step-back question)
+        for the following detailed question, so that a wider context
+        can be retrieved.
+        Detailed question: {{detailed_question}}
+        Step-back question:""")
+String stepBack(@V("detailed_question") String detailedQuestion);
+
+// 使用
+String userQuestion = "Can you give me some tips for a trip to Brighton?";
+String stepBackQuestion = ai.stepBack(userQuestion);
+System.out.println(ai.answer(retrieve(stepBackQuestion, 4), userQuestion));
+</pre>
+</div>
+</div>
+
+<p>进阶做法是<strong>两个都搜</strong>：用原始问题检索一次（拿细节），用后退问题再检索一次（拿背景），把两份结果都放进上下文。</p>
+
+<h2 id="hyde">④ 假设文档嵌入（HyDE）</h2>
+
+<div class="box note">
+  <div class="t">&#9432; 对症：「问句」和「陈述句」长得不像，语义距离偏大</div>
+  <p>
+    先让 LLM <strong>凭空写一个可能的答案</strong>（内容对不对无所谓），再用这段「假答案」去检索。
+    因为假答案和真资料<em>都是陈述句、用词风格相近</em>，向量会靠得更近。
+  </p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="HyDE：先让 LLM 生成一段假设的答案，用它的向量去检索真实文档">
+  <rect class="bx" x="20" y="24" width="210" height="50" rx="8"/>
+  <text class="sm" x="125" y="44" text-anchor="middle">问题（疑问句）</text>
+  <text class="lbl" x="125" y="62" text-anchor="middle">康沃尔最好的海滩是哪些？</text>
+  <path class="ln-a" d="M125 76 V110" marker-end="url(#ar-a)"/><text class="sm on-a" x="136" y="98">LLM 凭直觉写一句</text>
+  <rect class="bx-a" x="20" y="114" width="210" height="72" rx="8"/>
+  <text class="sm on-a" x="125" y="134" text-anchor="middle">假设文档（陈述句，可能不准）</text>
+  <text class="sm" x="125" y="154" text-anchor="middle">「康沃尔最好的海滩包括</text><text class="sm" x="125" y="170" text-anchor="middle">Fistral、Porthcurno……」</text>
+
+  <rect class="bx-d" x="300" y="14" width="440" height="182" rx="10"/>
+  <text class="sm" x="314" y="34">向量空间</text>
+  <circle cx="370" cy="70" r="8" style="fill:var(--fg-faint)"/><text class="sm" x="384" y="74">问题的向量</text>
+  <circle cx="560" cy="130" r="8" style="fill:var(--accent)"/><text class="sm on-a" x="492" y="158">假设文档的向量</text>
+  <circle cx="610" cy="106" r="8" style="fill:var(--green)"/><text class="sm on-g" x="624" y="102">真实：Newquay 的海滩</text>
+  <circle cx="622" cy="150" r="8" style="fill:var(--green)"/><text class="sm on-g" x="636" y="166">真实：St Ives 海滩</text>
+  <path class="ln-d" d="M378 74 L552 126"/><text class="sm" x="440" y="110">离得远</text>
+  <path class="ln-a" d="M567 126 L603 110"/><path class="ln-a" d="M568 134 L614 148"/>
+  <path class="ln-a" d="M232 150 H296" marker-end="url(#ar-a)"/><text class="sm on-a" x="264" y="142" text-anchor="middle">嵌入</text>
+</svg>
+<figcaption>图 9-3　HyDE：用「像答案的东西」去找答案</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+hyde_prompt = ChatPromptTemplate.from_template("""
+Write one sentence that could answer the provided question.
+Do not add anything else.
+Question: {question}
+Sentence:
+""")
+
+hyde_chain = hyde_prompt | llm | StrOutputParser()
+
+print(hyde_chain.invoke("What are the best beaches in Cornwall?"))
+# 可能的输出：Some of the best beaches in Cornwall include Fistral Beach, Porthcurno ...
+
+hyde_rag_chain = make_rag_chain(
+    {"question": RunnablePassthrough()} | hyde_chain | retriever)
+
+print(hyde_rag_chain.invoke("What are the best beaches in Cornwall?"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const hydePrompt = ChatPromptTemplate.fromTemplate(`
+Write one sentence that could answer the provided question.
+Do not add anything else.
+Question: {question}
+Sentence:
+`);
+
+const hydeChain = hydePrompt.pipe(llm).pipe(new StringOutputParser());
+
+console.log(await hydeChain.invoke({ question: "What are the best beaches in Cornwall?" }));
+
+const hydeRagChain = makeRagChain(
+  RunnableSequence.from([{ question: new RunnablePassthrough() }, hydeChain, retriever]));
+
+console.log(await hydeRagChain.invoke("What are the best beaches in Cornwall?"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 在 QuestionTransformer 接口里添加：
+@UserMessage("""
+        Write one sentence that could answer the provided question.
+        Do not add anything else.
+        Question: {{question}}
+        Sentence:""")
+String hypotheticalDocument(@V("question") String question);
+
+// 使用
+String userQuestion = "What are the best beaches in Cornwall?";
+String hypotheticalDoc = ai.hypotheticalDocument(userQuestion);    // 假答案
+System.out.println(ai.answer(retrieve(hypotheticalDoc, 4), userQuestion));
+</pre>
+</div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 假答案只用来检索，千万别进提示词</div>
+  <p>
+    假设文档是模型编的，很可能有错。它的唯一作用是<strong>当检索的「诱饵」</strong>。
+    最终作答时，上下文必须是检索回来的真实资料 —— 而且 RAG 提示词最好像上面的仓库代码那样加一句
+    <code>Only use the provided context to answer the question</code>。
+    另外，如果问题涉及模型完全不了解的领域（比如你公司的内部项目代号），它写出的假答案会离题万里，HyDE 反而帮倒忙。
+  </p>
+</div>
+
+<h2 id="decompose">⑤ 多步分解</h2>
+
+<div class="box note">
+  <div class="t">&#9432; 对症：问题由几个<strong>有先后依赖</strong>的小问题组成，前一个的答案是后一个的前提</div>
+</div>
+
+<p>
+  例如：「康沃尔最受欢迎的沙滩，八月的平均气温是多少？」要回答它，必须<strong>先</strong>知道最受欢迎的沙滩是哪个，
+  <strong>才能</strong>去查那个地方的气温。多查询的并行拆分在这里不管用。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 280" role="img" aria-label="多步分解：LLM 把问题拆成有依赖关系的步骤，逐步执行并把上一步答案代入下一步">
+  <rect class="bx" x="20" y="16" width="720" height="40" rx="8"/>
+  <text class="lbl" x="380" y="41" text-anchor="middle">原始问题：康沃尔最受欢迎的沙滩，八月的平均气温是多少？</text>
+  <path class="ln-a" d="M380 58 V76" marker-end="url(#ar-a)"/><text class="sm on-a" x="392" y="72">LLM 制定计划</text>
+
+  <rect class="bx-b" x="20" y="80" width="220" height="64" rx="8"/>
+  <text class="ttl on-b" x="130" y="102" text-anchor="middle">Q1</text>
+  <text class="sm" x="130" y="120" text-anchor="middle">康沃尔最受欢迎的沙滩是哪个？</text>
+  <text class="sm" x="130" y="136" text-anchor="middle">参数：无</text>
+  <rect class="bx-b" x="270" y="80" width="220" height="64" rx="8"/>
+  <text class="ttl on-b" x="380" y="102" text-anchor="middle">Q2</text>
+  <text class="sm" x="380" y="120" text-anchor="middle">[沙滩名] 八月每天的气温？</text>
+  <text class="sm" x="380" y="136" text-anchor="middle">参数：来自 Q1 的答案</text>
+  <rect class="bx-b" x="520" y="80" width="220" height="64" rx="8"/>
+  <text class="ttl on-b" x="630" y="102" text-anchor="middle">Q3</text>
+  <text class="sm" x="630" y="120" text-anchor="middle">这些气温的平均值是多少？</text>
+  <text class="sm" x="630" y="136" text-anchor="middle">参数：来自 Q2 的答案</text>
+
+  <path class="ln" d="M130 146 V172" marker-end="url(#ar)"/><path class="ln" d="M380 146 V172" marker-end="url(#ar)"/><path class="ln" d="M630 146 V172" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="60" y="176" width="140" height="36" rx="6"/><text class="sm on-g" x="130" y="199" text-anchor="middle">C1：Fistral Beach</text>
+  <rect class="bx-g" x="310" y="176" width="140" height="36" rx="6"/><text class="sm on-g" x="380" y="199" text-anchor="middle">C2：18, 19, 17, …</text>
+  <rect class="bx-g" x="560" y="176" width="140" height="36" rx="6"/><text class="sm on-g" x="630" y="199" text-anchor="middle">C3：约 18°C</text>
+  <path class="ln-g" d="M202 194 H250 V112 H266" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M452 194 H500 V112 H516" marker-end="url(#ar-g)"/>
+
+  <path class="ln" d="M130 214 V240 H290" marker-end="url(#ar)"/><path class="ln" d="M380 214 V230" marker-end="url(#ar)"/><path class="ln" d="M630 214 V240 H470" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="294" y="234" width="172" height="36" rx="8"/>
+  <text class="lbl on-a" x="380" y="257" text-anchor="middle">LLM：原始问题 + C1+C2+C3</text>
+</svg>
+<figcaption>图 9-4　多步分解：先订计划，再一步步执行，上一步的答案喂给下一步</figcaption>
+</figure>
+
+<p>生成计划的提示词：</p>
+
+<div class="code" data-lang="prompt">
+<pre>
+Break down the following question into multiple dependent steps that I can execute on a
+vector store or other data sources (e.g., databases) to obtain the final answer.
+Assume you have granular data in your data sources, but not aggregate data.
+Each subsequent question can take a parameter from the result of the previous step.
+For each step, include the question and the corresponding parameter that will be filled
+with the previous answer.
+Provide the sequence of questions in JSON format as a list, where each step includes:
+- Question: The text of the question.
+- Parameter: The parameter to be filled with the previous answer.
+----
+Original question: {user_question}
+Multiple dependent questions:
+</pre>
+</div>
+
+<p>原书没有给出完整实现，下面是一个最小的执行循环，帮助你理解它的运作方式：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from pydantic import BaseModel, Field
+
+class Step(BaseModel):
+    question: str = Field(description="The question for this step. Use [PREVIOUS] where "
+                                      "the previous step's answer must be inserted.")
+
+class Plan(BaseModel):
+    steps: List[Step]
+
+planner = ChatPromptTemplate.from_template(
+    "Break down the following question into multiple dependent steps ...\n"
+    "Original question: {user_question}"
+) | llm.with_structured_output(Plan)
+
+step_rag_chain = make_rag_chain(retriever)     # 每一步都是一次普通的 RAG
+
+def multi_step_answer(user_question: str) -&gt; str:
+    plan = planner.invoke({"user_question": user_question})
+    previous_answer, collected = "", []
+
+    for step in plan.steps:
+        question = step.question.replace("[PREVIOUS]", previous_answer)   # 代入上一步答案
+        previous_answer = step_rag_chain.invoke(question)
+        collected.append(f"Q: {question}\nA: {previous_answer}")
+
+    # 最后：用收集到的全部中间结论回答原始问题
+    final_prompt = rag_prompt.format(context="\n\n".join(collected), question=user_question)
+    return llm.invoke(final_prompt).content
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { z } from "zod";
+
+const Plan = z.object({
+  steps: z.array(z.object({
+    question: z.string().describe(
+      "The question for this step. Use [PREVIOUS] where the previous step's answer must be inserted."),
+  })),
+});
+
+const planner = ChatPromptTemplate.fromTemplate(
+  "Break down the following question into multiple dependent steps ...\n" +
+  "Original question: {user_question}",
+).pipe(llm.withStructuredOutput(Plan));
+
+const stepRagChain = makeRagChain(retriever);     // 每一步都是一次普通的 RAG
+
+async function multiStepAnswer(userQuestion: string): Promise&lt;string&gt; {
+  const plan = await planner.invoke({ user_question: userQuestion });
+  let previousAnswer = "";
+  const collected: string[] = [];
+
+  for (const step of plan.steps) {
+    const question = step.question.replace("[PREVIOUS]", previousAnswer);   // 代入上一步答案
+    previousAnswer = await stepRagChain.invoke(question);
+    collected.push(`Q: ${question}\nA: ${previousAnswer}`);
+  }
+
+  // 最后：用收集到的全部中间结论回答原始问题
+  const finalPrompt = await ragPrompt.format({
+    context: collected.join("\n\n"), question: userQuestion });
+  return (await llm.invoke(finalPrompt)).content as string;
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+record Step(String question) {}
+
+// 在 QuestionTransformer 接口里添加：
+@UserMessage("""
+        Break down the following question into multiple dependent steps ...
+        Use [PREVIOUS] where the previous step's answer must be inserted.
+        Original question: {{user_question}}""")
+List&lt;Step&gt; plan(@V("user_question") String userQuestion);
+
+static String multiStepAnswer(QuestionTransformer ai, String userQuestion) {
+    String previousAnswer = "";
+    List&lt;String&gt; collected = new ArrayList&lt;&gt;();
+
+    for (Step step : ai.plan(userQuestion)) {
+        String question = step.question().replace("[PREVIOUS]", previousAnswer);  // 代入上一步答案
+        previousAnswer = ai.answer(retrieve(question, 4), question);              // 一次普通的 RAG
+        collected.add("Q: " + question + "\nA: " + previousAnswer);
+    }
+    // 最后：用收集到的全部中间结论回答原始问题
+    return ai.answer(String.join("\n\n", collected), userQuestion);
+}
+</pre>
+</div>
+</div>
+
+<div class="box deep">
+  <div class="t">&#128300; 这已经是智能体的雏形</div>
+  <p>
+    「LLM 订计划 → 程序逐步执行 → 把结果反馈回去」，正是第 11 章要讲的智能体循环的简化版。
+    区别在于这里的计划是<strong>一次性订好</strong>的；真正的智能体每一步都会根据最新结果<strong>重新决定</strong>下一步，
+    而且每一步可以选用不同的工具（向量库、SQL、API……）。
+  </p>
+</div>
+
+<h2 id="choose">五种技巧怎么选</h2>
+
+<div class="tw">
+<table>
+  <tr><th>技巧</th><th>拿去检索的是</th><th>对症</th><th>额外开销</th></tr>
+  <tr><td>查询重写</td><td>精炼后的查询</td><td>口语化、啰嗦、关键词不突出</td><td>1 次 LLM</td></tr>
+  <tr><td>多查询</td><td>多个角度的问题</td><td>一种问法覆盖不全；含多个独立子问题</td><td>1 次 LLM + N 次检索</td></tr>
+  <tr><td>后退一步</td><td>更抽象的问题</td><td>问题过于具体，需要背景知识</td><td>1 次 LLM（可能要更强的模型）</td></tr>
+  <tr><td>HyDE</td><td>一段假设的答案</td><td>问句与陈述句的语义落差</td><td>1 次 LLM</td></tr>
+  <tr><td>多步分解</td><td>依次执行的子问题</td><td>子问题之间有先后依赖</td><td>多次 LLM + 多次检索</td></tr>
+</table>
+</div>
+
+<div class="box key">
+  <div class="t">&#128273; 每种技巧都在用时间和钱换准确率</div>
+  <p>
+    它们都至少多一次模型调用，用户会多等一会儿。不要默认全部开启：
+    用 LangSmith 看看检索到底差在哪里，<strong>只加能解决那个具体问题的技巧</strong>。
+    改写这一步对模型能力要求不高，通常用最小、最快的模型就够了。
+  </p>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>用户的原话常常不适合直接做语义检索：太口语、太具体、太笼统，或一句话里有多个问题。</li>
+  <li>问题改写只改变「拿去检索的那句话」，最终让模型作答的仍是原始问题。</li>
+  <li><strong>查询重写</strong>：提炼关键词。<strong>多查询</strong>：多角度撒网，合并去重。<strong>后退一步</strong>：抽象一层拿背景。</li>
+  <li><strong>HyDE</strong>：用一段假设的答案去检索，因为「答案像答案」。假答案绝不能进最终提示词。</li>
+  <li><strong>多步分解</strong>：先订计划，逐步执行，把上一步答案代入下一步 —— 已经接近智能体了。</li>
+  <li>所有技巧都有成本，先诊断，后用药。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>对 "Tell me some fun things I can enjoy in Cornwall" 分别用原始问题和重写后的查询检索，把两组结果并排比较。</li>
+    <li>打印多查询生成的 5 个问题。有没有哪个角度是你自己想不到的？</li>
+    <li>实现后退一步的「两个都搜」版本：原始问题和后退问题各检索一次，结果合并后再回答。</li>
+    <li>给 HyDE 一个模型不可能知道的问题（比如一个虚构地名的景点），看它生成的假设文档是什么，检索结果如何。</li>
+    <li>把第 7 章「对话记忆」里那个追问失败的问题（"And then what did they do?"）用查询重写解决：让改写链同时看到对话历史。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

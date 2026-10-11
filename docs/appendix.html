@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>附录 · 环境、选模型与本地 LLM — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="15">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">附录 A–E</span>
+<h1>附录：环境、选模型与本地 LLM</h1>
+<p class="lede">
+  这一页汇总了原书五个附录里对动手最有帮助的内容：怎么把环境搭起来、怎么挑模型、
+  以及怎么<strong>不花一分钱</strong>在自己电脑上跑开源模型来完成前面各章的练习。
+</p>
+
+<div id="chapter-toc"></div>
+
+<h2 id="env">搭建运行环境（附录 A、B、D）</h2>
+
+<h3>Python：虚拟环境 + Jupyter Notebook</h3>
+
+<p>
+  仓库里第 1–3、6–10 章是 Notebook（<code>.ipynb</code>），第 4、5、11 章是普通脚本。每章目录下都有自己的 <code>requirements.txt</code>，
+  建议<strong>一章一个虚拟环境</strong>，避免依赖版本互相打架。
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+cd ch06
+python -m venv env_ch06
+
+# 激活虚拟环境
+source env_ch06/bin/activate           # macOS / Linux
+# env_ch06\Scripts\activate            # Windows
+
+pip install -r requirements.txt
+
+# 启动 Notebook（会自动打开浏览器）
+jupyter notebook 06-chromadb-ingestion-and-querying.ipynb
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; Notebook 的三个使用习惯</div>
+  <ul>
+    <li><strong>按顺序逐格执行</strong>（Shift + Enter）。后面的单元格依赖前面定义的变量，跳着执行会报「变量未定义」。</li>
+    <li>改了前面的单元格后，记得<strong>重新运行</strong>它以及之后依赖它的单元格。</li>
+    <li>状态乱了就 <em>Kernel → Restart &amp; Run All</em>，从头来一遍。</li>
+  </ul>
+</div>
+
+<p>脚本类的章节把密钥放在 <code>.env</code> 文件里（仓库提供了 <code>.env_example</code> 作模板）：</p>
+
+<div class="code" data-lang="env" data-file=".env">
+<pre>
+OPENAI_API_KEY=sk-...
+# 第 13 章需要
+ACCUWEATHER_API_KEY=...
+# 可选：开启 LangSmith 追踪
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=...
+LANGSMITH_PROJECT=travel-assistant
+</pre>
+</div>
+
+<h3>TypeScript 与 Java</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="Python 版本要求">
+<pre>
+# Python 3.11 或更高
+# 仓库使用的主要版本（见各章 requirements.txt）：
+#   langchain==1.0.3
+#   langchain-openai==1.0.1
+#   langchain-community==0.4.1
+#   langgraph==1.0.2
+#   langchain-chroma==1.0.0   chromadb==1.3.0
+#   langgraph-supervisor==0.0.30
+#   langchain-mcp-adapters==0.1.12   fastmcp==2.10.5
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Node.js 项目初始化">
+<pre>
+// Node.js 20 或更高。在终端执行：
+//
+//   mkdir llm-ts &amp;&amp; cd llm-ts
+//   npm init -y
+//   npm pkg set type=module
+//   npm install langchain @langchain/core @langchain/openai @langchain/community \
+//               @langchain/classic @langchain/textsplitters @langchain/langgraph \
+//               zod dotenv
+//   npm install -D typescript tsx @types/node
+//
+// 之后按章节需要再加：
+//   第 4 章   cheerio duck-duck-scrape
+//   第 6–10 章 chromadb @chroma-core/default-embed better-sqlite3
+//   第 12 章  @langchain/langgraph-supervisor
+//   第 13 章  @modelcontextprotocol/sdk @langchain/mcp-adapters express
+//
+// 运行任意示例：npx tsx 文件名.ts
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="pom.xml 依赖一览">
+<pre>
+// Java 17 或更高（第 4 章的虚拟线程需要 21）。用 BOM 统一管理 LangChain4j 各模块的版本：
+//
+//   dev.langchain4j : langchain4j-bom（import 到 dependencyManagement）
+//
+// 基础：
+//   dev.langchain4j : langchain4j
+//   dev.langchain4j : langchain4j-open-ai
+//
+// 按章节需要再加：
+//   第 3、7 章  langchain4j-document-parser-apache-tika
+//               langchain4j-document-transformer-jsoup
+//   第 4 章     langchain4j-web-search-engine-tavily、org.jsoup:jsoup
+//   第 5、14 章 org.bsc.langgraph4j:langgraph4j-core
+//   第 6–10 章  langchain4j-chroma、langchain4j-embeddings-all-minilm-l6-v2
+//               org.xerial:sqlite-jdbc
+//   第 13 章    langchain4j-mcp
+//               org.springframework.ai:spring-ai-starter-mcp-server-webmvc（写服务器）
+</pre>
+</div>
+</div>
+
+<h3>Chroma 与 SQLite</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+# Chroma：Python 版可以直接在进程内运行，不需要额外安装。
+# TypeScript / Java 版是客户端，需要先启动一个 Chroma 服务：
+docker run -p 8000:8000 chromadb/chroma
+
+# SQLite：第 10 章和第 12 章用到。macOS / Linux 一般自带；
+# Windows 从 https://www.sqlite.org/download.html 下载 sqlite-tools 并加入 PATH。
+
+# 创建第 10 章的示例数据库
+cd ch10
+sqlite3 UkBooking.db &lt; CreateUkBooking.sql
+sqlite3 UkBooking.db &lt; PopulateUkBooking.sql
+
+# 创建第 12 章的酒店数据库
+cd ch11/hotel_db
+sqlite3 cornwall_hotels.db &lt; cornwall_hotels_schema.sql
+</pre>
+</div>
+
+<h2 id="choose">如何选择 LLM（附录 C）</h2>
+
+<p>选模型不是比谁的排行榜分数高，而是一连串的取舍。可以按这个顺序问自己：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="选择 LLM 的决策流程：定需求、通用还是专用、隐私要求、模型大小">
+  <rect class="bx" x="290" y="10" width="180" height="38" rx="19"/><text class="ttl" x="380" y="34" text-anchor="middle">① 明确需求</text>
+  <text class="sm" x="486" y="26">任务是什么？对准确度、速度、</text><text class="sm" x="486" y="42">成本、保密性各有多高的要求？</text>
+  <path class="ln" d="M380 50 V70" marker-end="url(#ar)"/>
+
+  <path class="bx-b" d="M380 74 L500 108 L380 142 L260 108 Z" style="fill:var(--blue-bg)"/>
+  <text class="lbl on-b" x="380" y="113" text-anchor="middle">② 通用还是专用？</text>
+  <rect class="bx" x="20" y="88" width="190" height="42" rx="8"/><text class="sm" x="115" y="106" text-anchor="middle">通用：摘要、翻译、分类、问答</text><text class="sm" x="115" y="122" text-anchor="middle">→ 主流模型都能胜任</text>
+  <rect class="bx" x="550" y="88" width="190" height="42" rx="8"/><text class="sm" x="645" y="106" text-anchor="middle">专用：写代码、医学、法律</text><text class="sm" x="645" y="122" text-anchor="middle">→ 选针对该领域优化的模型</text>
+  <path class="ln" d="M258 108 H214" marker-end="url(#ar)"/><path class="ln" d="M502 108 H546" marker-end="url(#ar)"/>
+  <path class="ln" d="M380 144 V160" marker-end="url(#ar)"/>
+
+  <path class="bx-b" d="M380 164 L500 198 L380 232 L260 198 Z" style="fill:var(--blue-bg)"/>
+  <text class="lbl on-b" x="380" y="203" text-anchor="middle">③ 数据能出门吗？</text>
+  <rect class="bx" x="20" y="178" width="190" height="42" rx="8"/><text class="sm" x="115" y="196" text-anchor="middle">可以 → 闭源 API</text><text class="sm" x="115" y="212" text-anchor="middle">上手快，效果通常领先</text>
+  <rect class="bx" x="550" y="178" width="190" height="42" rx="8"/><text class="sm" x="645" y="196" text-anchor="middle">不行 → 开源模型自己部署</text><text class="sm" x="645" y="212" text-anchor="middle">数据不离开自己的机器</text>
+  <path class="ln" d="M258 198 H214" marker-end="url(#ar)"/><path class="ln" d="M502 198 H546" marker-end="url(#ar)"/>
+  <path class="ln" d="M380 234 V250" marker-end="url(#ar)"/>
+
+  <rect class="bx-a" x="250" y="254" width="260" height="38" rx="8"/><text class="lbl on-a" x="380" y="278" text-anchor="middle">④ 选多大的模型？</text>
+  <rect class="bx-g" x="20" y="252" width="190" height="62" rx="8"/><text class="sm on-g" x="115" y="272" text-anchor="middle">小模型</text><text class="sm" x="115" y="288" text-anchor="middle">快、便宜</text><text class="sm" x="115" y="304" text-anchor="middle">批量摘要、分类、护栏</text>
+  <rect class="bx-r" x="550" y="252" width="190" height="62" rx="8"/><text class="sm on-r" x="645" y="272" text-anchor="middle">大模型</text><text class="sm" x="645" y="288" text-anchor="middle">更准，但更慢、更贵</text><text class="sm" x="645" y="304" text-anchor="middle">规划、复杂推理、SQL 生成</text>
+  <path class="ln" d="M248 273 H214" marker-end="url(#ar)"/><path class="ln" d="M512 273 H546" marker-end="url(#ar)"/>
+  <text class="sm" x="380" y="314" text-anchor="middle">中等模型：折中，适合日常对话与答案汇总</text>
+</svg>
+<figcaption>图 A-1　选模型的四个问题</figcaption>
+</figure>
+
+<h3>比较模型时看哪些维度</h3>
+
+<div class="tw">
+<table>
+  <tr><th>维度</th><th>含义</th><th>为什么重要</th></tr>
+  <tr><td>准确度</td><td>在标准测试集上的得分</td><td>参考价值有限：务必用<strong>你自己的任务</strong>再测一遍</td></tr>
+  <tr><td>上下文窗口</td><td>一次能处理多少 token</td><td>决定能塞进多少资料和对话历史</td></tr>
+  <tr><td>速度</td><td>首个 token 延迟、每秒生成 token 数</td><td>交互式应用对延迟很敏感</td></tr>
+  <tr><td>价格</td><td>每百万输入 / 输出 token 的费用</td><td>输出通常比输入贵数倍</td></tr>
+  <tr><td>模态</td><td>是否支持图片、音频输入</td><td>多模态 RAG（第 8 章）需要</td></tr>
+  <tr><td>工具调用</td><td>是否支持、是否稳定</td><td>智能体（第 11 章起）的前提</td></tr>
+  <tr><td>结构化输出</td><td>能否可靠地按 schema 返回 JSON</td><td>路由、自查询、护栏都依赖它</td></tr>
+  <tr><td>多语言</td><td>对中文及其他语言的支持</td><td>不同模型差距很大</td></tr>
+  <tr><td>许可</td><td>闭源 API 还是开源权重，开源许可是否允许商用</td><td>影响部署方式和合规</td></tr>
+</table>
+</div>
+
+<h3>常见基准测试</h3>
+
+<div class="tw">
+<table>
+  <tr><th>基准</th><th>测什么</th></tr>
+  <tr><td>MMLU</td><td>跨 57 个学科的选择题，衡量通用知识</td></tr>
+  <tr><td>GPQA</td><td>研究生水平的科学问答，衡量深度推理</td></tr>
+  <tr><td>HumanEval</td><td>根据描述写 Python 函数并通过单元测试，衡量代码能力</td></tr>
+  <tr><td>SWE-bench</td><td>修复真实开源项目里的 issue，衡量工程能力</td></tr>
+  <tr><td>MATH / GSM8K</td><td>数学解题</td></tr>
+</table>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 别太迷信排行榜</div>
+  <p>
+    模型更新极快，书里和这里列出的具体型号与分数都会很快过时；公开基准也存在「题目泄露进训练数据」的问题。
+    可靠的做法是：<strong>先用最便宜的模型跑通</strong>，建立一小套属于自己业务的测试题（第 14 章的「评估」），
+    效果不够时再逐级换更强的模型，用数据说话。因为 LangChain 统一了接口，换模型通常只改一行。
+  </p>
+</div>
+
+<h3>本教程里的模型分工</h3>
+
+<div class="tw">
+<table>
+  <tr><th>任务</th><th>仓库里用的模型</th><th>理由</th></tr>
+  <tr><td>摘要、普通 RAG 问答、查询改写</td><td><code>gpt-5-nano</code></td><td>量大、难度低，求快求省</td></tr>
+  <tr><td>少样本推理、MCP 智能体</td><td><code>gpt-5-mini</code></td><td>需要稍强的理解力</td></tr>
+  <tr><td>工具智能体（第 11 章）</td><td><code>gpt-4.1-mini</code></td><td>工具调用稳定、延迟低</td></tr>
+  <tr><td>SQL 生成（第 10 章）</td><td><code>gpt-4.1</code></td><td>要求语法严格正确</td></tr>
+  <tr><td>后退一步、Supervisor、带记忆的助手</td><td><code>gpt-5</code></td><td>需要抽象和规划</td></tr>
+</table>
+</div>
+
+<h2 id="local">在本地运行开源 LLM（附录 E）</h2>
+
+<p>不想付费、不想让数据离开自己的电脑，或者只是好奇？可以在本机跑开源模型。</p>
+
+<h3>为什么可行：量化</h3>
+
+<p>
+  原始模型的每个参数是 16 或 32 位浮点数，一个 70 亿参数的模型要占十几 GB 显存。
+  <strong>量化</strong>（quantization）把参数压缩成 4 位或 8 位整数，体积缩小到原来的四分之一左右，精度只损失一点点 ——
+  于是普通笔记本的内存和 CPU 也能跑起来。常见的量化模型文件格式是 <strong>GGUF</strong>。
+</p>
+
+<h3>关键设计：OpenAI 兼容接口</h3>
+
+<p>
+  几乎所有本地推理引擎都提供一个<strong>和 OpenAI 一模一样的 REST 接口</strong>。
+  这意味着前面 14 章的代码几乎不用动，只要把请求地址从 OpenAI 的服务器改成 <code>localhost</code>：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="你的应用通过同一套 OpenAI 兼容接口，可以对接云端 OpenAI 或本地推理引擎">
+  <rect class="bx-g" x="20" y="70" width="190" height="70" rx="10"/>
+  <text class="ttl on-g" x="115" y="98" text-anchor="middle">你的应用</text><text class="sm" x="115" y="118" text-anchor="middle">LangChain / LangChain4j</text>
+  <rect class="bx" x="280" y="70" width="170" height="70" rx="10"/>
+  <text class="mono" x="365" y="96" text-anchor="middle">POST /v1/chat/</text><text class="mono" x="365" y="112" text-anchor="middle">completions</text>
+  <text class="sm" x="365" y="130" text-anchor="middle">同一种请求格式</text>
+  <path class="ln" d="M212 105 H276" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="540" y="14" width="200" height="60" rx="10"/>
+  <text class="ttl on-a" x="640" y="38" text-anchor="middle">OpenAI 云端</text><text class="mono" x="640" y="58" text-anchor="middle">api.openai.com/v1</text>
+  <rect class="bx-b" x="540" y="136" width="200" height="60" rx="10"/>
+  <text class="ttl on-b" x="640" y="160" text-anchor="middle">本地推理引擎</text><text class="mono" x="640" y="180" text-anchor="middle">localhost:11434/v1</text>
+  <path class="ln-a" d="M452 92 L536 50" marker-end="url(#ar-a)"/><path class="ln-b" d="M452 118 L536 160" marker-end="url(#ar-b)"/>
+  <text class="sm" x="490" y="110" text-anchor="middle">只改 base_url</text>
+</svg>
+<figcaption>图 A-2　换一个地址，应用代码不变</figcaption>
+</figure>
+
+<h3>推理引擎怎么选</h3>
+
+<div class="tw">
+<table>
+  <tr><th>引擎</th><th>底层</th><th>安装方式</th><th>图形界面</th><th>一句话定位</th></tr>
+  <tr><td>llama.cpp</td><td>—</td><td>从源码编译</td><td>无</td><td>一切的基础，控制力最强，门槛也最高</td></tr>
+  <tr><td><strong>Ollama</strong></td><td>llama.cpp</td><td>安装包</td><td>无（命令行）</td><td>一条命令下载并运行模型，<strong>入门首选</strong></td></tr>
+  <tr><td>LM Studio</td><td>llama.cpp</td><td>安装包</td><td>有</td><td>图形化地搜索、下载、对话、开启本地服务</td></tr>
+  <tr><td>GPT4All</td><td>llama.cpp</td><td>安装包</td><td>有</td><td>面向普通用户的桌面应用</td></tr>
+  <tr><td>llamafile</td><td>llama.cpp</td><td>单个可执行文件</td><td>网页</td><td>模型和运行时打包成一个文件，双击即用</td></tr>
+  <tr><td>LocalAI</td><td>llama.cpp / vLLM</td><td>Docker</td><td>无</td><td>把多种后端统一成 OpenAI 风格的接口</td></tr>
+  <tr><td>vLLM</td><td>vLLM</td><td>pip（Linux + GPU）</td><td>无</td><td>高吞吐，面向<strong>生产环境</strong></td></tr>
+</table>
+</div>
+
+<h3>用 Ollama 五分钟跑起来</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+# 1. 从 https://ollama.com 下载安装
+# 2. 下载并运行一个模型（第一次会下载几个 GB）
+ollama run mistral
+
+# 3. Ollama 会在后台启动一个服务，OpenAI 兼容接口在：
+#    http://localhost:11434/v1
+curl http://localhost:11434/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "mistral", "messages": [{"role": "user", "content": "How many Greek temples are there in Paestum?"}]}'
+</pre>
+</div>
+
+<h3>从代码里调用本地模型</h3>
+
+<p>对应仓库的 <code>apE/local_llm.ipynb</code>。先用原生 OpenAI 客户端，再用框架：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from openai import OpenAI
+from langchain_openai import ChatOpenAI
+
+LOCAL_BASE_URL = "http://localhost:11434/v1"       # Ollama；LM Studio 默认是 1234 端口
+
+# —— 方式一：OpenAI 官方客户端，只改 base_url ——
+client = OpenAI(base_url=LOCAL_BASE_URL, api_key="NO_KEY_NEEDED")
+
+completion = client.chat.completions.create(
+    model="mistral",
+    messages=[
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": "How many Greek temples are there in Paestum?"}],
+    temperature=0.7)
+print(completion.choices[0].message.content)
+
+# —— 方式二：LangChain ——
+llm = ChatOpenAI(base_url=LOCAL_BASE_URL, api_key="NO_KEY_NEEDED", model="mistral")
+print(llm.invoke("How many Greek temples are there in Paestum?").content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import OpenAI from "openai";
+import { ChatOpenAI } from "@langchain/openai";
+
+const LOCAL_BASE_URL = "http://localhost:11434/v1";   // Ollama；LM Studio 默认是 1234 端口
+
+// —— 方式一：OpenAI 官方客户端，只改 baseURL ——
+const client = new OpenAI({ baseURL: LOCAL_BASE_URL, apiKey: "NO_KEY_NEEDED" });
+
+const completion = await client.chat.completions.create({
+  model: "mistral",
+  messages: [
+    { role: "system", content: "You are a helpful AI assistant." },
+    { role: "user", content: "How many Greek temples are there in Paestum?" }],
+  temperature: 0.7,
+});
+console.log(completion.choices[0].message.content);
+
+// —— 方式二：LangChain.js ——
+const llm = new ChatOpenAI({
+  model: "mistral",
+  apiKey: "NO_KEY_NEEDED",
+  configuration: { baseURL: LOCAL_BASE_URL },
+});
+console.log((await llm.invoke("How many Greek temples are there in Paestum?")).content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.model.openai.OpenAiChatModel;
+
+String LOCAL_BASE_URL = "http://localhost:11434/v1";   // Ollama；LM Studio 默认是 1234 端口
+
+// LangChain4j 的 OpenAI 模型同样支持自定义 baseUrl
+var llm = OpenAiChatModel.builder()
+        .baseUrl(LOCAL_BASE_URL)
+        .apiKey("NO_KEY_NEEDED")
+        .modelName("mistral")
+        .temperature(0.7)
+        .build();
+
+System.out.println(llm.chat("How many Greek temples are there in Paestum?"));
+
+// 也可以用专门的 Ollama 模块（依赖 langchain4j-ollama）：
+//   OllamaChatModel.builder().baseUrl("http://localhost:11434").modelName("mistral").build();
+</pre>
+</div>
+</div>
+
+<h3>让整个项目可切换</h3>
+
+<p>
+  还记得第 4 章把「创建模型」集中在 <code>get_llm()</code> 一个函数里吗？这个设计现在见效了 ——
+  只改这一个函数，整个研究摘要引擎就跑在本地模型上：
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="llm_models.py">
+<pre>
+import os
+from langchain_openai import ChatOpenAI
+
+def get_llm():
+    if os.getenv("USE_LOCAL_LLM") == "true":
+        return ChatOpenAI(
+            base_url=os.getenv("LOCAL_LLM_URL", "http://localhost:11434/v1"),
+            api_key="NO_KEY_NEEDED",
+            model=os.getenv("LOCAL_LLM_MODEL", "mistral"))
+    return ChatOpenAI(model="gpt-5-nano")       # 默认：OpenAI
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="llmModels.ts">
+<pre>
+import { ChatOpenAI } from "@langchain/openai";
+
+export function getLlm() {
+  if (process.env.USE_LOCAL_LLM === "true") {
+    return new ChatOpenAI({
+      model: process.env.LOCAL_LLM_MODEL ?? "mistral",
+      apiKey: "NO_KEY_NEEDED",
+      configuration: { baseURL: process.env.LOCAL_LLM_URL ?? "http://localhost:11434/v1" },
+    });
+  }
+  return new ChatOpenAI({ model: "gpt-5-nano" });   // 默认：OpenAI
+}
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="LlmModels.java">
+<pre>
+public class LlmModels {
+    public static ChatModel getLlm() {
+        if ("true".equals(System.getenv("USE_LOCAL_LLM"))) {
+            return OpenAiChatModel.builder()
+                    .baseUrl(env("LOCAL_LLM_URL", "http://localhost:11434/v1"))
+                    .apiKey("NO_KEY_NEEDED")
+                    .modelName(env("LOCAL_LLM_MODEL", "mistral"))
+                    .build();
+        }
+        return OpenAiChatModel.builder()            // 默认：OpenAI
+                .apiKey(System.getenv("OPENAI_API_KEY")).modelName("gpt-5-nano").build();
+    }
+
+    private static String env(String key, String fallback) {
+        String v = System.getenv(key);
+        return v != null ? v : fallback;
+    }
+}
+</pre>
+</div>
+</div>
+
+<h3>本地模型的现实</h3>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>云端 API</th><th>本地开源模型</th></tr>
+  <tr><td>费用</td><td>按 token 计费</td><td>免费（电费和硬件除外）</td></tr>
+  <tr><td>隐私</td><td>数据发往第三方</td><td>数据不离开本机</td></tr>
+  <tr><td>速度</td><td>快</td><td>没有 GPU 时明显慢，长文本尤甚</td></tr>
+  <tr><td>效果</td><td>通常更强</td><td>摘要、问答够用；复杂推理有差距</td></tr>
+  <tr><td>工具调用 / 结构化输出</td><td>稳定</td><td><strong>视模型而定</strong>，小模型常常不可靠</td></tr>
+  <tr><td>离线可用</td><td>否</td><td>是</td></tr>
+</table>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 用本地模型做智能体章节要留意</div>
+  <p>
+    第 1–10 章的示例换成本地模型基本都能跑通。但第 11 章起的智能体<strong>强依赖工具调用和结构化输出</strong>，
+    而不少小型开源模型在这两项上并不稳定 —— 表现为不调用工具、参数格式错误、或输出无法解析的 JSON。
+    做这些章节的练习时，请选择明确标注支持 tool calling 的模型，并做好它偶尔出错的准备。
+    另外，嵌入模型也需要一并替换成本地的（例如通过 Ollama 运行的嵌入模型），否则向量化这一步仍然会调用 OpenAI。
+  </p>
+</div>
+
+<h2 id="glossary">全书术语速查</h2>
+
+<div class="tw">
+<table>
+  <tr><th>术语</th><th>一句话解释</th><th>首次出现</th></tr>
+  <tr><td>LLM</td><td>大语言模型，根据上文预测下文的「文字接龙」模型</td><td>第 1 章</td></tr>
+  <tr><td>Token</td><td>模型处理文本的最小单位，也是计费单位</td><td>第 1 章</td></tr>
+  <tr><td>上下文窗口</td><td>模型一次能处理的最大 token 数</td><td>第 1 章</td></tr>
+  <tr><td>提示词 Prompt</td><td>发给模型的输入</td><td>第 1 章</td></tr>
+  <tr><td>LCEL</td><td>LangChain 表达式语言，用 <code>|</code> 把组件串成链</td><td>第 1 章</td></tr>
+  <tr><td>少样本 Few-shot</td><td>在提示词里放几个例子来教模型</td><td>第 2 章</td></tr>
+  <tr><td>思维链 CoT</td><td>让模型先写出推理过程再给答案</td><td>第 2 章</td></tr>
+  <tr><td>Map-Reduce</td><td>分块各自处理，再合并结果</td><td>第 3 章</td></tr>
+  <tr><td>Refine</td><td>维护一份滚动摘要，逐份文档修订</td><td>第 3 章</td></tr>
+  <tr><td>状态 State</td><td>LangGraph 中在节点间共享的数据结构</td><td>第 5 章</td></tr>
+  <tr><td>条件边</td><td>根据状态决定下一个节点的路由函数</td><td>第 5 章</td></tr>
+  <tr><td>嵌入 Embedding</td><td>文本的向量表示，语义相近则向量相近</td><td>第 6 章</td></tr>
+  <tr><td>RAG</td><td>检索增强生成：先检索资料，再让模型据此回答</td><td>第 6 章</td></tr>
+  <tr><td>幻觉</td><td>模型编造出看似合理但没有依据的内容</td><td>第 6 章</td></tr>
+  <tr><td>检索器 Retriever</td><td>「输入问题，输出相关文档」的统一接口</td><td>第 7 章</td></tr>
+  <tr><td>多向量检索</td><td>用小的「代理」匹配，返回大的「父块」</td><td>第 8 章</td></tr>
+  <tr><td>结构化输出</td><td>让模型按给定 schema 返回对象</td><td>第 8 章</td></tr>
+  <tr><td>HyDE</td><td>先生成假设答案，用它去检索</td><td>第 9 章</td></tr>
+  <tr><td>自查询</td><td>LLM 从问题中提取元数据过滤条件</td><td>第 10 章</td></tr>
+  <tr><td>RRF</td><td>倒数排名融合，合并多路检索结果</td><td>第 10 章</td></tr>
+  <tr><td>工具调用</td><td>模型请求、程序执行、结果回传的协作协议</td><td>第 11 章</td></tr>
+  <tr><td>ReAct</td><td>思考 → 行动 → 观察的智能体循环</td><td>第 11 章</td></tr>
+  <tr><td>Reducer</td><td>规定状态字段如何合并（覆盖还是追加）</td><td>第 11 章</td></tr>
+  <tr><td>Supervisor</td><td>协调多个子智能体的主管智能体</td><td>第 12 章</td></tr>
+  <tr><td>MCP</td><td>模型上下文协议，工具对接的统一标准</td><td>第 13 章</td></tr>
+  <tr><td>检查点 Checkpoint</td><td>图执行每一步后的状态快照</td><td>第 14 章</td></tr>
+  <tr><td>线程 Thread</td><td>一场连续的对话，用 <code>thread_id</code> 标识</td><td>第 14 章</td></tr>
+  <tr><td>护栏 Guardrail</td><td>在模型前后拦截不合规输入 / 输出的检查</td><td>第 14 章</td></tr>
+</table>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 1 章 · AI 智能体与应用导论 — AI 智能体与应用开发教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="1">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 1 章</span>
+<h1>AI 智能体与应用导论</h1>
+<p class="lede">
+  在写第一行代码之前，先把地图看清楚：LLM 应用有哪几种形态？LangChain 到底帮我们省了什么事？
+  「提示词工程、RAG、微调」这三个总被一起提到的词，各自解决什么问题？
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>分清三类 LLM 应用：引擎、聊天机器人、智能体</li>
+    <li>看懂 LangChain 的整体架构和几个核心对象</li>
+    <li>理解让模型「懂你的业务」的三种手段及其取舍</li>
+    <li>知道选模型时该权衡什么</li>
+    <li>跑通第一条 LangChain 链</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="llm">先用一句话说清 LLM</h2>
+
+<p>
+  大语言模型（Large Language Model，LLM）是一个<strong>文字接龙机器</strong>：你给它一段文字（叫<strong>提示词</strong>，prompt），
+  它根据训练时读过的海量文本，一个词一个词地预测「接下来最可能出现什么」。
+</p>
+<p>
+  神奇的地方在于：只要接龙接得足够好，它就表现得像是会总结、会翻译、会写代码、会推理。
+  但它也有三个天生的短板，后面每一章几乎都在想办法弥补它们：
+</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128197;</span><h4>知识有截止日期</h4><p>它只知道训练数据里的东西，不知道昨天的新闻，更不知道你公司的内部文档。</p></div>
+  <div class="card"><span class="ic">&#128207;</span><h4>一次读不了太多</h4><p>提示词加回答的总长度有上限，叫<strong>上下文窗口</strong>。一整本书塞不进去。</p></div>
+  <div class="card"><span class="ic">&#9995;</span><h4>只会说，不会做</h4><p>它输出的永远是文字。查数据库、调接口、订酒店，都得靠外面的程序替它动手。</p></div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 什么是 token</div>
+  <p>
+    模型处理文字的最小单位不是字也不是词，而是 <strong>token</strong>（词元）。英文里一个 token 大约是 3/4 个单词，
+    中文里一个汉字通常是 1–2 个 token。上下文窗口的大小、API 的价格，都是按 token 算的。
+  </p>
+</div>
+
+<h2 id="apps">三类 LLM 应用</h2>
+
+<h3>引擎：一问一答的后台服务</h3>
+
+<p>
+  <strong>引擎</strong>（engine）是最简单的形态：接收一个请求，内部跑一串固定步骤，返回一个结果，然后就结束了，不记得上一次发生过什么。
+  典型例子是<strong>摘要引擎</strong>和<strong>问答引擎</strong>。它通常藏在一个 REST 接口后面，被别的系统调用。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="摘要引擎：客户端通过 REST 接口提交文档，引擎调用 LLM 后返回摘要">
+  <rect class="bx" x="20" y="56" width="120" height="58" rx="10"/>
+  <text class="ttl" x="80" y="82" text-anchor="middle">客户端系统</text>
+  <text class="sm" x="80" y="100" text-anchor="middle">网站 / App</text>
+
+  <rect class="bx-b" x="230" y="36" width="260" height="98" rx="12"/>
+  <text class="ttl on-b" x="360" y="60" text-anchor="middle">摘要引擎</text>
+  <rect class="bx" x="246" y="74" width="68" height="44" rx="7"/><text class="sm" x="280" y="100" text-anchor="middle">切分文档</text>
+  <rect class="bx" x="326" y="74" width="68" height="44" rx="7"/><text class="sm" x="360" y="100" text-anchor="middle">逐块摘要</text>
+  <rect class="bx" x="406" y="74" width="68" height="44" rx="7"/><text class="sm" x="440" y="100" text-anchor="middle">合并摘要</text>
+  <path class="ln" d="M315 96 H324" marker-end="url(#ar)"/><path class="ln" d="M395 96 H404" marker-end="url(#ar)"/>
+
+  <rect class="bx-a" x="600" y="56" width="140" height="58" rx="10"/>
+  <text class="ttl on-a" x="670" y="90" text-anchor="middle">LLM</text>
+
+  <path class="ln-b" d="M142 74 H226" marker-end="url(#ar-b)"/>
+  <text class="sm" x="184" y="66" text-anchor="middle">一份长文档</text>
+  <path class="ln-g" d="M226 100 H146" marker-end="url(#ar-g)"/>
+  <text class="sm" x="184" y="118" text-anchor="middle">一段摘要</text>
+  <path class="ln-a" d="M492 74 H596" marker-end="url(#ar-a)"/>
+  <text class="sm" x="544" y="66" text-anchor="middle">多次提示词</text>
+  <path class="ln" d="M596 100 H496" marker-end="url(#ar)"/>
+  <text class="sm" x="544" y="118" text-anchor="middle">多次回答</text>
+</svg>
+<figcaption>图 1-1　引擎：输入一次、输出一次，中间可以调很多次 LLM</figcaption>
+</figure>
+
+<h3>聊天机器人：有记忆的多轮对话</h3>
+
+<p>
+  <strong>聊天机器人</strong>（chatbot）多了两样东西：<strong>对话</strong>和<strong>记忆</strong>。
+  你说「帮我总结《战争与和平》」，它给了 1000 字；你接着说「太长了，两三句话就行」——
+  它得记得「太长了」说的是刚才那份摘要。
+</p>
+<p>
+  这里有个初学者常有的误解：模型自己并不记得上一轮。所谓「记忆」，是应用程序<strong>把之前的对话原样再发一遍</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="聊天机器人时序图：第二轮请求会把第一轮的问答一起发给 LLM">
+  <rect class="bx" x="60" y="16" width="110" height="34" rx="8"/><text class="ttl" x="115" y="38" text-anchor="middle">用户</text>
+  <rect class="bx-g" x="325" y="16" width="110" height="34" rx="8"/><text class="ttl on-g" x="380" y="38" text-anchor="middle">聊天机器人</text>
+  <rect class="bx-a" x="590" y="16" width="110" height="34" rx="8"/><text class="ttl on-a" x="645" y="38" text-anchor="middle">LLM</text>
+  <path class="ln-d" d="M115 50 V278"/><path class="ln-d" d="M380 50 V278"/><path class="ln-d" d="M645 50 V278"/>
+
+  <path class="ln" d="M115 80 H376" marker-end="url(#ar)"/>
+  <text class="lbl" x="245" y="72" text-anchor="middle">① 总结《战争与和平》</text>
+  <path class="ln-a" d="M380 106 H641" marker-end="url(#ar-a)"/>
+  <text class="sm" x="512" y="98" text-anchor="middle">[问题①]</text>
+  <path class="ln" d="M645 132 H384" marker-end="url(#ar)"/>
+  <path class="ln-g" d="M380 148 H119" marker-end="url(#ar-g)"/>
+  <text class="lbl" x="245" y="166" text-anchor="middle">1000 字的摘要</text>
+
+  <path class="ln" d="M115 196 H376" marker-end="url(#ar)"/>
+  <text class="lbl" x="245" y="188" text-anchor="middle">② 太长了，两三句就行</text>
+  <rect class="bx-p" x="398" y="204" width="228" height="26" rx="6"/>
+  <text class="sm on-p" x="512" y="221" text-anchor="middle">[问题① + 回答① + 问题②]</text>
+  <path class="ln-a" d="M380 238 H641" marker-end="url(#ar-a)"/>
+  <path class="ln" d="M645 258 H384" marker-end="url(#ar)"/>
+  <path class="ln-g" d="M380 270 H119" marker-end="url(#ar-g)"/>
+  <text class="lbl" x="245" y="286" text-anchor="middle">50 字的摘要</text>
+</svg>
+<figcaption>图 1-2　「记忆」的真相：每一轮都把历史对话重新发给模型</figcaption>
+</figure>
+
+<h3>智能体：自己决定下一步做什么</h3>
+
+<p>
+  <strong>AI 智能体</strong>（agent）又往前走了一大步：它手里有一组<strong>工具</strong>（函数、API、数据库查询……），
+  每一步都先问 LLM「现在该用哪个工具、参数是什么」，执行完再把结果交回给 LLM，如此循环，直到任务完成。
+</p>
+<p>
+  书里的例子是旅行社的度假套餐助手：用户说「帮我安排七月去康沃尔的一周行程」，
+  智能体自己去查航班、酒店、租车、天气预报和内部优惠数据库，最后拼成一份完整方案。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 310" role="img" aria-label="智能体工作流程：收到请求、让 LLM 选工具、执行工具、把结果交给 LLM 汇总、返回方案">
+  <rect class="bx" x="20" y="64" width="120" height="60" rx="10"/>
+  <text class="ttl" x="80" y="90" text-anchor="middle">客户端系统</text>
+  <text class="sm" x="80" y="108" text-anchor="middle">订票网站</text>
+
+  <rect class="bx-g" x="270" y="54" width="200" height="80" rx="12"/>
+  <text class="ttl on-g" x="370" y="88" text-anchor="middle">AI 智能体</text>
+  <text class="sm" x="370" y="108" text-anchor="middle">负责「动手」和「跑流程」</text>
+
+  <rect class="bx-a" x="610" y="54" width="130" height="80" rx="12"/>
+  <text class="ttl on-a" x="675" y="88" text-anchor="middle">LLM</text>
+  <text class="sm" x="675" y="108" text-anchor="middle">负责「动脑」</text>
+
+  <path class="ln" d="M142 82 H266" marker-end="url(#ar)"/>
+  <text class="sm" x="204" y="74" text-anchor="middle">① 度假需求</text>
+  <path class="ln-g" d="M266 108 H146" marker-end="url(#ar-g)"/>
+  <text class="sm" x="204" y="126" text-anchor="middle">⑤ 行程方案</text>
+
+  <path class="ln-a" d="M472 76 H606" marker-end="url(#ar-a)"/>
+  <text class="sm" x="539" y="68" text-anchor="middle">② 该用哪些工具？</text>
+  <path class="ln" d="M606 96 H476" marker-end="url(#ar)"/>
+  <text class="sm" x="539" y="111" text-anchor="middle">工具名 + 参数</text>
+  <path class="ln-a" d="M472 124 H606" marker-end="url(#ar-a)"/>
+  <text class="sm" x="539" y="140" text-anchor="middle">④ 这是查到的结果</text>
+
+  <rect class="bx-d" x="110" y="196" width="630" height="98" rx="10"/>
+  <text class="sm" x="124" y="214">工具箱（③ 智能体逐个调用并收集结果）</text>
+  <rect class="bx" x="124" y="226" width="92" height="52" rx="8"/><text class="lbl" x="170" y="248" text-anchor="middle">航班</text><text class="sm" x="170" y="266" text-anchor="middle">REST API</text>
+  <rect class="bx" x="226" y="226" width="92" height="52" rx="8"/><text class="lbl" x="272" y="248" text-anchor="middle">酒店</text><text class="sm" x="272" y="266" text-anchor="middle">REST API</text>
+  <rect class="bx" x="328" y="226" width="92" height="52" rx="8"/><text class="lbl" x="374" y="248" text-anchor="middle">优惠库</text><text class="sm" x="374" y="266" text-anchor="middle">SQL</text>
+  <rect class="bx" x="430" y="226" width="92" height="52" rx="8"/><text class="lbl" x="476" y="248" text-anchor="middle">天气预报</text><text class="sm" x="476" y="266" text-anchor="middle">REST API</text>
+  <rect class="bx" x="532" y="226" width="92" height="52" rx="8"/><text class="lbl" x="578" y="248" text-anchor="middle">目的地</text><text class="sm" x="578" y="266" text-anchor="middle">向量库</text>
+  <rect class="bx" x="634" y="226" width="92" height="52" rx="8"/><text class="lbl" x="680" y="248" text-anchor="middle">租车</text><text class="sm" x="680" y="266" text-anchor="middle">REST API</text>
+  <path class="ln-g" d="M370 136 V192" marker-end="url(#ar-g)"/>
+  <text class="sm" x="380" y="170">③ 执行</text>
+</svg>
+<figcaption>图 1-3　智能体：LLM 出主意，智能体去执行，循环到任务完成</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#128273; 三者的本质区别</div>
+  <p>
+    <strong>引擎</strong>的流程是程序员写死的；<strong>聊天机器人</strong>多了记忆；
+    <strong>智能体</strong>则把「下一步做什么」的决定权交给了 LLM。自主程度越高，能做的事越多，也越难预测和调试 ——
+    所以高风险场景（金融、医疗）通常会在关键步骤加上<strong>人工确认</strong>（human-in-the-loop）。
+  </p>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>引擎</th><th>聊天机器人</th><th>智能体</th></tr>
+  <tr><td>交互方式</td><td>一次请求，一次响应</td><td>多轮对话</td><td>给目标，自己跑多步</td></tr>
+  <tr><td>有没有记忆</td><td>没有</td><td>有（对话历史）</td><td>有（状态 + 历史）</td></tr>
+  <tr><td>流程谁决定</td><td>程序员</td><td>程序员</td><td>LLM 在约束内决定</td></tr>
+  <tr><td>能否调用外部工具</td><td>可以，但写死</td><td>主要是检索</td><td>可以，动态选择</td></tr>
+  <tr><td>本教程的例子</td><td>研究摘要引擎</td><td>旅游问答机器人</td><td>旅行助手</td></tr>
+</table>
+</div>
+
+<h2 id="langchain">LangChain 帮我们做了什么</h2>
+
+<p>
+  理论上，只用 HTTP 请求就能调用 LLM。但真做起应用来，你会反复写同样的东西：
+  读各种格式的文件、把长文切成小块、拼提示词、解析模型输出、换一家模型供应商就要改一遍代码……
+</p>
+<p>
+  <strong>LangChain</strong> 就是把这些重复劳动抽象成了一套<strong>可以互相拼接的标准积木</strong>。它有三个核心卖点：
+</p>
+<ul>
+  <li><strong>统一接口</strong>：OpenAI、Gemini、Claude、本地模型……换模型只改一行。</li>
+  <li><strong>现成组件</strong>：几十种文档加载器、切分器、向量库适配器，开箱即用。</li>
+  <li><strong>可组合</strong>：每块积木都实现同一个 <code>Runnable</code> 接口，可以像管道一样串起来。</li>
+</ul>
+
+<h3>整体架构：一条数据流水线</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 320" role="img" aria-label="LangChain 架构：入库阶段把文档加载、切分、向量化存入向量库；问答阶段检索后拼入提示词交给 LLM，再解析输出">
+  <rect class="bx-d" x="14" y="14" width="732" height="124" rx="10"/>
+  <text class="ttl" x="28" y="36">入库阶段（提前做一次）</text>
+
+  <rect class="bx" x="28" y="56" width="104" height="64" rx="8"/>
+  <text class="lbl" x="80" y="82" text-anchor="middle">数据源</text><text class="sm" x="80" y="100" text-anchor="middle">PDF/网页/库</text>
+  <rect class="bx-b" x="162" y="56" width="118" height="64" rx="8"/>
+  <text class="lbl on-b" x="221" y="82" text-anchor="middle">文档加载器</text><text class="sm" x="221" y="100" text-anchor="middle">Document Loader</text>
+  <rect class="bx-b" x="310" y="56" width="118" height="64" rx="8"/>
+  <text class="lbl on-b" x="369" y="82" text-anchor="middle">文本切分器</text><text class="sm" x="369" y="100" text-anchor="middle">Text Splitter</text>
+  <rect class="bx-b" x="458" y="56" width="118" height="64" rx="8"/>
+  <text class="lbl on-b" x="517" y="82" text-anchor="middle">嵌入模型</text><text class="sm" x="517" y="100" text-anchor="middle">Embedding Model</text>
+  <rect class="bx-p" x="606" y="56" width="126" height="64" rx="8"/>
+  <text class="lbl on-p" x="669" y="82" text-anchor="middle">向量库</text><text class="sm" x="669" y="100" text-anchor="middle">Vector Store</text>
+  <path class="ln" d="M134 88 H158" marker-end="url(#ar)"/>
+  <path class="ln" d="M282 88 H306" marker-end="url(#ar)"/>
+  <path class="ln" d="M430 88 H454" marker-end="url(#ar)"/>
+  <path class="ln" d="M578 88 H602" marker-end="url(#ar)"/>
+  <text class="sm" x="146" y="80" text-anchor="middle"></text>
+
+  <rect class="bx-d" x="14" y="176" width="732" height="130" rx="10"/>
+  <text class="ttl" x="228" y="198">问答阶段（每次提问都走一遍）</text>
+
+  <rect class="bx" x="28" y="222" width="94" height="64" rx="8"/>
+  <text class="lbl" x="75" y="258" text-anchor="middle">用户问题</text>
+  <rect class="bx-p" x="150" y="222" width="108" height="64" rx="8"/>
+  <text class="lbl on-p" x="204" y="248" text-anchor="middle">检索器</text><text class="sm" x="204" y="266" text-anchor="middle">Retriever</text>
+  <rect class="bx-g" x="286" y="222" width="118" height="64" rx="8"/>
+  <text class="lbl on-g" x="345" y="248" text-anchor="middle">提示词模板</text><text class="sm" x="345" y="266" text-anchor="middle">问题 + 资料</text>
+  <rect class="bx-a" x="432" y="222" width="100" height="64" rx="8"/>
+  <text class="lbl on-a" x="482" y="248" text-anchor="middle">LLM</text><text class="sm" x="482" y="266" text-anchor="middle">Chat Model</text>
+  <rect class="bx-g" x="560" y="222" width="104" height="64" rx="8"/>
+  <text class="lbl on-g" x="612" y="248" text-anchor="middle">输出解析器</text><text class="sm" x="612" y="266" text-anchor="middle">Output Parser</text>
+  <text class="lbl" x="715" y="258" text-anchor="middle">答案</text>
+  <path class="ln" d="M124 254 H146" marker-end="url(#ar)"/>
+  <path class="ln" d="M260 254 H282" marker-end="url(#ar)"/>
+  <path class="ln" d="M406 254 H428" marker-end="url(#ar)"/>
+  <path class="ln" d="M534 254 H556" marker-end="url(#ar)"/>
+  <path class="ln" d="M666 254 H692" marker-end="url(#ar)"/>
+
+  <path class="ln-p" d="M669 122 V158 H204 V218" marker-end="url(#ar-p)"/>
+  <text class="sm on-p" x="436" y="152" text-anchor="middle">按语义找出最相关的几块文本</text>
+</svg>
+<figcaption>图 1-4　LangChain 的积木如何拼成一条流水线</figcaption>
+</figure>
+
+<h3>核心对象速查</h3>
+
+<p>先混个脸熟，后面每一章都会反复用到它们：</p>
+
+<div class="tw">
+<table>
+  <tr><th>对象</th><th>是什么</th><th>第一次认真用到</th></tr>
+  <tr><td><code>Document</code></td><td>一段文本 <code>page_content</code> + 一个字典 <code>metadata</code>（来源、页码……）</td><td>第 3 章</td></tr>
+  <tr><td>Document Loader</td><td>把文件 / 网页 / 维基百科读成 <code>Document</code> 列表</td><td>第 3 章</td></tr>
+  <tr><td>Text Splitter</td><td>把大文档切成小块（chunk）</td><td>第 3 章</td></tr>
+  <tr><td>Embedding Model</td><td>把一段文字变成一串数字（向量），语义越近向量越近</td><td>第 6 章</td></tr>
+  <tr><td>Vector Store</td><td>存向量、按相似度查找的数据库</td><td>第 6 章</td></tr>
+  <tr><td>Retriever</td><td>「给我一个问题，还你若干相关文档」的统一接口</td><td>第 7 章</td></tr>
+  <tr><td>Prompt Template</td><td>带占位符的提示词</td><td>本章</td></tr>
+  <tr><td>Chat Model</td><td>对各家 LLM 的统一封装</td><td>本章</td></tr>
+  <tr><td>Output Parser</td><td>把模型返回的消息变成字符串 / JSON / 对象</td><td>第 3 章</td></tr>
+  <tr><td>Runnable / Chain</td><td>上面所有积木的共同接口；串起来就是「链」</td><td>本章</td></tr>
+</table>
+</div>
+
+<h2 id="adapt">让模型懂你的业务：三种手段</h2>
+
+<p>
+  通用模型不知道你公司的产品手册，也不知道你想要的回答风格。有三种办法补上这一课，成本从低到高：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="三种定制手段对比：提示词工程改提示词、RAG 给资料、微调改模型本身">
+  <rect class="bx-g" x="20" y="20" width="226" height="210" rx="12"/>
+  <text class="ttl on-g" x="133" y="46" text-anchor="middle">提示词工程</text>
+  <text class="sm" x="133" y="66" text-anchor="middle">把话说清楚</text>
+  <rect class="bx" x="40" y="82" width="186" height="34" rx="6"/><text class="sm" x="133" y="103" text-anchor="middle">角色 + 指令 + 例子</text>
+  <path class="ln-g" d="M133 118 V140" marker-end="url(#ar-g)"/>
+  <rect class="bx-a" x="78" y="144" width="110" height="34" rx="6"/><text class="sm on-a" x="133" y="165" text-anchor="middle">原版 LLM</text>
+  <text class="sm" x="133" y="200" text-anchor="middle">成本：几乎为零</text>
+  <text class="sm" x="133" y="218" text-anchor="middle">见效：立刻</text>
+
+  <rect class="bx-b" x="267" y="20" width="226" height="210" rx="12"/>
+  <text class="ttl on-b" x="380" y="46" text-anchor="middle">RAG 检索增强生成</text>
+  <text class="sm" x="380" y="66" text-anchor="middle">考试时允许翻书</text>
+  <rect class="bx" x="287" y="82" width="88" height="34" rx="6"/><text class="sm" x="331" y="103" text-anchor="middle">问题</text>
+  <rect class="bx-p" x="385" y="82" width="88" height="34" rx="6"/><text class="sm on-p" x="429" y="103" text-anchor="middle">检索到的资料</text>
+  <path class="ln-b" d="M380 118 V140" marker-end="url(#ar-b)"/>
+  <rect class="bx-a" x="325" y="144" width="110" height="34" rx="6"/><text class="sm on-a" x="380" y="165" text-anchor="middle">原版 LLM</text>
+  <text class="sm" x="380" y="200" text-anchor="middle">成本：建索引 + 维护</text>
+  <text class="sm" x="380" y="218" text-anchor="middle">数据可随时更新</text>
+
+  <rect class="bx-p" x="514" y="20" width="226" height="210" rx="12"/>
+  <text class="ttl on-p" x="627" y="46" text-anchor="middle">微调 Fine-tuning</text>
+  <text class="sm" x="627" y="66" text-anchor="middle">考前集中补课</text>
+  <rect class="bx" x="534" y="82" width="186" height="34" rx="6"/><text class="sm" x="627" y="103" text-anchor="middle">成千上万条训练样本</text>
+  <path class="ln-p" d="M627 118 V140" marker-end="url(#ar-p)"/>
+  <rect class="bx-r" x="566" y="144" width="122" height="34" rx="6"/><text class="sm on-r" x="627" y="165" text-anchor="middle">改过参数的 LLM</text>
+  <text class="sm" x="627" y="200" text-anchor="middle">成本：数据 + GPU + 时间</text>
+  <text class="sm" x="627" y="218" text-anchor="middle">知识更新要重新训练</text>
+</svg>
+<figcaption>图 1-5　三种手段改的地方不同：改提示词、给资料、改模型</figcaption>
+</figure>
+
+<dl class="gloss">
+  <dt>提示词工程（Prompt Engineering）</dt>
+  <dd>精心设计输入，让模型明白任务。常用技巧是<strong>上下文学习</strong>（in-context learning）：在提示词里放几个例子，模型就能照猫画虎，不需要任何训练。第 2 章专门讲。</dd>
+  <dt>RAG（Retrieval-Augmented Generation，检索增强生成）</dt>
+  <dd>提问时先从你自己的资料库里<strong>检索</strong>相关内容，塞进提示词，让模型「看着资料回答」。它解决了知识截止和私有数据两个问题，还能减少模型瞎编（<strong>幻觉</strong>）。第 6–10 章专门讲。</dd>
+  <dt>微调（Fine-tuning）</dt>
+  <dd>用专门的数据集继续训练模型，让它把领域知识和风格「记进脑子里」。效果扎实，但准备数据和训练都很贵。医学、法律、金融等高度专业的领域才值得。<strong>本教程不涉及微调。</strong></dd>
+</dl>
+
+<div class="box tip">
+  <div class="t">&#128161; 实用的选择顺序</div>
+  <p>
+    先试提示词工程 → 不够再加 RAG → 还不够才考虑微调。
+    研究表明，对于冷门知识，RAG 的效果常常比微调更好，而且数据一变只需要更新索引，不用重新训练。
+  </p>
+</div>
+
+<h2 id="choose">选哪个模型</h2>
+
+<p>没有「最好的模型」，只有「最适合这个任务的模型」。核心是三者之间的权衡：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="模型选择的三角权衡：准确度、速度、成本">
+  <path class="ln" d="M250 40 L110 200 L390 200 Z"/>
+  <rect class="bx-a" x="200" y="18" width="100" height="36" rx="18"/><text class="ttl on-a" x="250" y="41" text-anchor="middle">准确度</text>
+  <rect class="bx-b" x="60" y="184" width="100" height="36" rx="18"/><text class="ttl on-b" x="110" y="207" text-anchor="middle">速度</text>
+  <rect class="bx-g" x="340" y="184" width="100" height="36" rx="18"/><text class="ttl on-g" x="390" y="207" text-anchor="middle">成本</text>
+  <text class="sm" x="250" y="140" text-anchor="middle">三者很难同时拿满</text>
+
+  <rect class="bx" x="480" y="24" width="260" height="56" rx="8"/>
+  <text class="lbl" x="494" y="46">大模型（如 gpt-5）</text>
+  <text class="sm" x="494" y="66">更准，但更慢、更贵 → 复杂推理、路由决策</text>
+  <rect class="bx" x="480" y="92" width="260" height="56" rx="8"/>
+  <text class="lbl" x="494" y="114">中模型（如 gpt-5-mini）</text>
+  <text class="sm" x="494" y="134">折中 → 汇总答案、日常对话</text>
+  <rect class="bx" x="480" y="160" width="260" height="56" rx="8"/>
+  <text class="lbl" x="494" y="182">小模型（如 gpt-5-nano）</text>
+  <text class="sm" x="494" y="202">快且便宜 → 批量摘要、分类</text>
+</svg>
+<figcaption>图 1-6　一个系统里常常混用不同档位的模型</figcaption>
+</figure>
+
+<p>除了这个三角，还要看：</p>
+<ul>
+  <li><strong>上下文窗口</strong>：要处理的文档有多长？常见 API 是 12.8 万到 25.6 万 token，少数模型能到百万级。</li>
+  <li><strong>多语言能力</strong>：要处理中文或小语种时，不同模型差距很大。</li>
+  <li><strong>指令型 vs 推理型</strong>：步骤明确的任务用指令型模型；需要它自己琢磨「怎么做」的任务用推理型（更慢更贵）。</li>
+  <li><strong>开源 vs 闭源</strong>：开源模型（Llama、Mistral、Qwen）可以自己部署，数据不出门；闭源 API 上手快，效果通常领先。</li>
+</ul>
+<p>更细的对比表和本地部署方法见<a href="appendix.html">附录</a>。</p>
+
+<h2 id="code">动手：第一条链</h2>
+
+<p>概念够多了，写点代码。下面四步对应仓库里的 <code>ch01/01-langchain_examples.ipynb</code>。</p>
+
+<h3>第一步：让模型接龙</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_openai import ChatOpenAI
+import getpass
+
+OPENAI_API_KEY = getpass.getpass('Enter your OPENAI_API_KEY')
+
+llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY,
+                 model_name="gpt-5-nano")
+
+response = llm.invoke("It's a hot day, I would like to go to the...")
+print(response.content)
+# 可能的输出：...beach to cool off in the water.
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { ChatOpenAI } from "@langchain/openai";
+
+// 不传 apiKey 时自动读取环境变量 OPENAI_API_KEY
+const llm = new ChatOpenAI({ model: "gpt-5-nano" });
+
+const response = await llm.invoke("It's a hot day, I would like to go to the...");
+console.log(response.content);
+// 可能的输出：...beach to cool off in the water.
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+
+ChatModel llm = OpenAiChatModel.builder()
+        .apiKey(System.getenv("OPENAI_API_KEY"))
+        .modelName("gpt-5-nano")
+        .build();
+
+String answer = llm.chat("It's a hot day, I would like to go to the...");
+System.out.println(answer);
+// 可能的输出：...beach to cool off in the water.
+</pre>
+</div>
+</div>
+
+<p>
+  注意返回值：Python 和 TypeScript 里得到的是一个<strong>消息对象</strong>（<code>AIMessage</code>），正文在 <code>.content</code> 里，
+  另外还带着 token 用量等元数据；LangChain4j 的 <code>chat(String)</code> 是个便捷方法，直接返回字符串。
+</p>
+
+<h3>第二步：一条真正的指令</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+prompt_input = """Write a short message to remind users to be
+vigilant about phishing attacks."""
+
+response = llm.invoke(prompt_input)
+print(response.content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const promptInput = `Write a short message to remind users to be
+vigilant about phishing attacks.`;
+
+const response = await llm.invoke(promptInput);
+console.log(response.content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+String promptInput = """
+        Write a short message to remind users to be
+        vigilant about phishing attacks.""";
+
+System.out.println(llm.chat(promptInput));
+</pre>
+</div>
+</div>
+
+<h3>第三步：提示词模板</h3>
+
+<p>
+  真实应用里，提示词的大部分文字是固定的，只有少数几处会变。把变化的部分挖成<strong>占位符</strong>，就是提示词模板 ——
+  和你熟悉的字符串模板没有本质区别，只是 LangChain 把它做成了可以接进流水线的积木。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain_core.prompts import PromptTemplate
+
+segovia_aqueduct_text = """The Aqueduct of Segovia is a Roman aqueduct
+in Segovia, Spain. It was built around the first century AD ..."""   # 原文较长，此处省略
+
+prompt_template = PromptTemplate.from_template(
+    """You are an experienced copywriter. Write a {num_words} words summary of
+the following text, using a {tone} tone: {text}""")
+
+prompt_input = prompt_template.format(
+    text=segovia_aqueduct_text,
+    num_words=20,
+    tone="knowledgeable and engaging")
+
+response = llm.invoke(prompt_input)
+print(response.content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { PromptTemplate } from "@langchain/core/prompts";
+
+const segoviaAqueductText = `The Aqueduct of Segovia is a Roman aqueduct
+in Segovia, Spain. It was built around the first century AD ...`;   // 原文较长，此处省略
+
+const promptTemplate = PromptTemplate.fromTemplate(
+  `You are an experienced copywriter. Write a {num_words} words summary of
+the following text, using a {tone} tone: {text}`);
+
+const promptInput = await promptTemplate.format({
+  text: segoviaAqueductText,
+  num_words: 20,
+  tone: "knowledgeable and engaging",
+});
+
+const response = await llm.invoke(promptInput);
+console.log(response.content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.model.input.PromptTemplate;
+import java.util.Map;
+
+String segoviaAqueductText = """
+        The Aqueduct of Segovia is a Roman aqueduct
+        in Segovia, Spain. It was built around the first century AD ...""";   // 原文较长，此处省略
+
+// 注意：LangChain4j 的占位符是双花括号 {{name}}
+PromptTemplate promptTemplate = PromptTemplate.from("""
+        You are an experienced copywriter. Write a {{num_words}} words summary of
+        the following text, using a {{tone}} tone: {{text}}""");
+
+String promptInput = promptTemplate.apply(Map.of(
+        "text", segoviaAqueductText,
+        "num_words", 20,
+        "tone", "knowledgeable and engaging")).text();
+
+System.out.println(llm.chat(promptInput));
+</pre>
+</div>
+</div>
+
+<h3>第四步：把模板和模型串成链</h3>
+
+<p>
+  上一步里我们手动做了两件事：格式化模板、调用模型。LangChain 允许把它们<strong>接成一根管子</strong>，一次调用走完。
+  这种写法叫 <strong>LCEL</strong>（LangChain Expression Language）。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 130" role="img" aria-label="链：字典输入进入提示词模板，生成提示词后交给 LLM，输出 AIMessage">
+  <rect class="bx" x="20" y="34" width="170" height="62" rx="8"/>
+  <text class="mono" x="34" y="56">{ text: "...",</text>
+  <text class="mono" x="34" y="72">  num_words: 20,</text>
+  <text class="mono" x="34" y="88">  tone: "..." }</text>
+  <path class="ln" d="M192 65 H232" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="236" y="34" width="150" height="62" rx="8"/>
+  <text class="ttl on-g" x="311" y="60" text-anchor="middle">prompt_template</text>
+  <text class="sm" x="311" y="80" text-anchor="middle">填空 → 完整提示词</text>
+  <path class="ln" d="M388 65 H436" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="440" y="34" width="120" height="62" rx="8"/>
+  <text class="ttl on-a" x="500" y="60" text-anchor="middle">llm</text>
+  <text class="sm" x="500" y="80" text-anchor="middle">生成回答</text>
+  <path class="ln" d="M562 65 H602" marker-end="url(#ar)"/>
+  <rect class="bx" x="606" y="34" width="134" height="62" rx="8"/>
+  <text class="mono" x="673" y="60" text-anchor="middle">AIMessage</text>
+  <text class="sm" x="673" y="80" text-anchor="middle">.content 是正文</text>
+  <text class="sm" x="380" y="120" text-anchor="middle">chain = prompt_template | llm　　前一个的输出，就是后一个的输入</text>
+</svg>
+<figcaption>图 1-7　一条最短的链</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+chain = prompt_template | llm        # 竖线 | 就是「接管子」
+
+response = chain.invoke({
+    "text": segovia_aqueduct_text,
+    "num_words": 20,
+    "tone": "knowledgeable and engaging"})
+print(response.content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// JavaScript 没法重载 | 运算符，所以用 .pipe()
+const chain = promptTemplate.pipe(llm);
+
+const response = await chain.invoke({
+  text: segoviaAqueductText,
+  num_words: 20,
+  tone: "knowledgeable and engaging",
+});
+console.log(response.content);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
+
+// LangChain4j 没有 | 管道。它的惯用法是「AI Service」：
+// 你只声明一个接口，框架在运行时生成实现 —— 模板 + 调模型 + 解析输出一步到位。
+interface Copywriter {
+    @UserMessage("""
+            You are an experienced copywriter. Write a {{num_words}} words summary of
+            the following text, using a {{tone}} tone: {{text}}""")
+    String summarize(@V("text") String text,
+                     @V("num_words") int numWords,
+                     @V("tone") String tone);
+}
+
+Copywriter chain = AiServices.create(Copywriter.class, llm);
+
+System.out.println(chain.summarize(segoviaAqueductText, 20, "knowledgeable and engaging"));
+</pre>
+</div>
+</div>
+
+<div class="box deep">
+  <div class="t">&#128300; 为什么「链」值得专门发明一个语法</div>
+  <p>
+    因为所有积木都实现了同一个接口（<code>invoke</code> / <code>batch</code> / <code>stream</code>），
+    串起来的链<strong>自己也是一块积木</strong>，可以继续被串进更大的链里。
+    而且框架知道了整条流水线的结构，就能自动帮你做并行、流式输出、重试和链路追踪 —— 第 4 章会看到这一点有多省事。
+  </p>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>LLM 是文字接龙机器，有知识截止、上下文窗口有限、不能动手三个短板。</li>
+  <li>LLM 应用有三种形态：<strong>引擎</strong>（一问一答）、<strong>聊天机器人</strong>（多轮 + 记忆）、<strong>智能体</strong>（自己选工具、自己决定下一步）。</li>
+  <li>LangChain 提供统一接口、现成组件和可组合的链；LangGraph 在它之上处理带分支和循环的复杂流程。</li>
+  <li>让模型适应业务的三种手段：提示词工程 → RAG → 微调，成本依次升高。</li>
+  <li>选模型就是在准确度、速度、成本之间找平衡；一个系统里混用多档模型很常见。</li>
+  <li>提示词模板 + 模型 = 最短的一条链。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>把四步示例在你选的语言里跑通。把 <code>num_words</code> 改成 50、<code>tone</code> 改成 "humorous"，观察输出变化。</li>
+    <li>把模型从 <code>gpt-5-nano</code> 换成 <code>gpt-5-mini</code>，同一个提示词，回答质量和速度有什么不同？</li>
+    <li>想一个你工作或学习中的真实场景，判断它更适合做成引擎、聊天机器人还是智能体，并说出理由。</li>
+    <li>同一个提示词连续运行三次，结果一样吗？想想为什么（提示：模型是按概率挑下一个词的）。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

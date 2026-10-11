@@ -26,7 +26,8 @@
     <li>用 LangGraph 的检查点（checkpointer）和 <code>thread_id</code> 实现多轮对话</li>
     <li>查看状态历史，并把对话「倒带」到过去的某个时刻</li>
     <li>在路由层和智能体层分别加上输入护栏</li>
-    <li>了解上线前还需要考虑的事：长期记忆、人工介入、输出护栏、评估、部署</li>
+    <li>用中间件实现护栏和人工审批，给节点加上重试、超时和错误处理</li>
+    <li>了解上线前还需要考虑的事：长期记忆、输出护栏、评估、部署</li>
   </ul>
 </div>
 
@@ -727,6 +728,380 @@ Assistant: In Penzance you can visit ...                                   ← �
   </ul>
 </div>
 
+<h2 id="mw">用中间件做同样的事（当前写法）</h2>
+
+<p>
+  上面的护栏是按仓库代码讲的：手写路由节点，加 <code>pre_model_hook</code>。
+  第 11 章介绍过，现在的标准入口是 <code>create_agent</code> 加<strong>中间件</strong>。用它重写，护栏变成一个可以到处复用的小函数，
+  而「后续功课」里的好几项（人工审批、隐私脱敏、调用上限）有了现成的实现。
+</p>
+
+<h3>护栏中间件</h3>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from typing import Any
+from langchain.agents import create_agent
+from langchain.agents.middleware import before_agent, AgentState, PIIMiddleware
+from langchain.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.runtime import Runtime
+
+REFUSAL_TEXT = ("Sorry, I can only help with travel questions about Cornwall (England): "
+                "destinations, attractions, lodging, prices, availability, or weather.")
+
+# before_agent：每次用户发来新消息时运行一次（而不是循环的每一圈），正适合做输入护栏
+@before_agent(can_jump_to=["end"])
+def cornwall_guardrail(state: AgentState, runtime: Runtime) -&gt; dict[str, Any] | None:
+    last_msg = state["messages"][-1]
+    if not isinstance(last_msg, HumanMessage):
+        return None
+
+    decision = llm_guardrail.invoke([               # 和前面一样的分类器
+        SystemMessage(content=AGENT_GUARDRAIL_SYSTEM_PROMPT),
+        HumanMessage(content=last_msg.content)])
+
+    if decision.is_travel:
+        return None                                 # 放行
+    return {"messages": [AIMessage(REFUSAL_TEXT)],  # 写入固定拒绝语
+            "jump_to": "end"}                       # 直接结束，主模型一次都不调用
+
+travel_info_agent = create_agent(
+    model="openai:gpt-5-mini",
+    tools=TOOLS,
+    system_prompt="You are a helpful assistant that can search travel information ...",
+    middleware=[
+        cornwall_guardrail,
+        # 顺手加上隐私保护：用户输入里的邮箱和卡号在送进模型前被遮盖
+        PIIMiddleware("email", strategy="redact", apply_to_input=True),
+        PIIMiddleware("credit_card", strategy="mask", apply_to_input=True),
+    ],
+)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { createAgent, createMiddleware, piiMiddleware, AIMessage, HumanMessage, SystemMessage } from "langchain";
+
+const REFUSAL_TEXT = "Sorry, I can only help with travel questions about Cornwall (England): " +
+  "destinations, attractions, lodging, prices, availability, or weather.";
+
+// beforeAgent：每次用户发来新消息时运行一次，正适合做输入护栏
+const cornwallGuardrail = createMiddleware({
+  name: "CornwallGuardrail",
+  beforeAgent: {
+    canJumpTo: ["end"],
+    hook: async (state) =&gt; {
+      const lastMsg = state.messages.at(-1);
+      if (!(lastMsg instanceof HumanMessage)) return;
+
+      const decision = await llmGuardrail.invoke([        // 和前面一样的分类器
+        new SystemMessage(AGENT_GUARDRAIL_SYSTEM_PROMPT),
+        new HumanMessage(lastMsg.content as string)]);
+
+      if (decision.is_travel) return;                     // 放行
+      return { messages: [new AIMessage(REFUSAL_TEXT)],   // 写入固定拒绝语
+               jumpTo: "end" };                           // 直接结束
+    },
+  },
+});
+
+const travelInfoAgent = createAgent({
+  model: "openai:gpt-5-mini",
+  tools: TOOLS,
+  systemPrompt: "You are a helpful assistant that can search travel information ...",
+  middleware: [
+    cornwallGuardrail,
+    // 顺手加上隐私保护：用户输入里的邮箱和卡号在送进模型前被遮盖
+    piiMiddleware("email", { strategy: "redact", applyToInput: true }),
+    piiMiddleware("credit_card", { strategy: "mask", applyToInput: true }),
+  ],
+});
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// LangChain4j 的声明式护栏（上一节的 CornwallGuardrail）本来就是「可复用的小组件」，
+// 这里补上输出方向的例子：在回答返回用户之前做检查或改写。
+import dev.langchain4j.guardrail.OutputGuardrail;
+import dev.langchain4j.guardrail.OutputGuardrailResult;
+import dev.langchain4j.service.guardrail.OutputGuardrails;
+
+public class EmailRedactionGuardrail implements OutputGuardrail {
+    private static final Pattern EMAIL = Pattern.compile("[\\w.+-]+@[\\w-]+\\.[\\w.]+");
+
+    @Override
+    public OutputGuardrailResult validate(AiMessage responseFromLLM) {
+        String text = responseFromLLM.text();
+        if (EMAIL.matcher(text).find()) {
+            // 把回答里的邮箱地址遮盖后再放行
+            return successWith(EMAIL.matcher(text).replaceAll("[REDACTED_EMAIL]"));
+        }
+        return success();
+    }
+}
+
+interface TravelInfoAgent {
+    @SystemMessage("You are a helpful assistant that can search travel information ...")
+    @InputGuardrails(CornwallGuardrail.class)          // 输入护栏
+    @OutputGuardrails(EmailRedactionGuardrail.class)   // 输出护栏
+    String chat(String userMessage);
+}
+</pre>
+</div>
+</div>
+
+<h3>人工审批：有副作用的工具先停一下</h3>
+
+<p>
+  查天气可以放手让智能体去做，「真的下单订房」就不行了。<code>HumanInTheLoopMiddleware</code> 让指定的工具在执行前<strong>暂停</strong>：
+  状态存进检查点，等人给出决定后再从原地继续。它建立在本章前半部分的检查点机制之上，所以<strong>必须配置 checkpointer</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 190" role="img" aria-label="人工审批流程：模型请求调用下单工具，中间件暂停并保存检查点，人批准、修改或拒绝后恢复执行">
+  <rect class="bx-a" x="20" y="60" width="120" height="60" rx="10"/><text class="ttl on-a" x="80" y="86" text-anchor="middle">模型</text><text class="sm" x="80" y="106" text-anchor="middle">想调用 book_room</text>
+  <rect class="bx-r" x="190" y="50" width="170" height="80" rx="10"/>
+  <text class="ttl on-r" x="275" y="78" text-anchor="middle">人工审批中间件</text><text class="sm" x="275" y="98" text-anchor="middle">暂停 + 存检查点</text><text class="sm" x="275" y="114" text-anchor="middle">invoke 立即返回</text>
+  <rect class="bx" x="410" y="60" width="120" height="60" rx="10"/><text class="ttl" x="470" y="86" text-anchor="middle">人</text><text class="sm" x="470" y="106" text-anchor="middle">几秒或几天后</text>
+  <rect class="bx-g" x="600" y="10" width="146" height="44" rx="8"/><text class="sm on-g" x="673" y="30" text-anchor="middle">approve 批准</text><text class="sm" x="673" y="46" text-anchor="middle">→ 原样执行工具</text>
+  <rect class="bx-b" x="600" y="68" width="146" height="44" rx="8"/><text class="sm on-b" x="673" y="88" text-anchor="middle">edit 修改</text><text class="sm" x="673" y="104" text-anchor="middle">→ 改了参数再执行</text>
+  <rect class="bx-r" x="600" y="126" width="146" height="44" rx="8"/><text class="sm on-r" x="673" y="146" text-anchor="middle">reject 拒绝</text><text class="sm" x="673" y="162" text-anchor="middle">→ 把理由告诉模型</text>
+  <path class="ln" d="M142 90 H186" marker-end="url(#ar)"/><path class="ln" d="M362 90 H406" marker-end="url(#ar)"/>
+  <path class="ln" d="M532 80 L596 36" marker-end="url(#ar)"/><path class="ln" d="M532 90 H596" marker-end="url(#ar)"/><path class="ln" d="M532 100 L596 144" marker-end="url(#ar)"/>
+  <text class="sm" x="275" y="160" text-anchor="middle">用同一个 thread_id 再次调用即可恢复</text>
+</svg>
+<figcaption>图 14-4　暂停、等人、恢复 —— 等多久都行，因为状态在检查点里</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
+booking_agent = create_agent(
+    model="openai:gpt-5-mini",
+    tools=[check_bnb_availability, book_room],        # book_room：假设的「真正下单」工具
+    checkpointer=InMemorySaver(),                     # 人工审批必须有检查点
+    middleware=[
+        HumanInTheLoopMiddleware(interrupt_on={
+            "book_room": {"allowed_decisions": ["approve", "edit", "reject"]},
+            "check_bnb_availability": False,          # 只读工具：不需要审批
+        }),
+    ],
+)
+
+config = {"configurable": {"thread_id": "booking-001"}}
+
+# ① 第一次调用：模型决定下单，中间件把它拦下，invoke 提前返回
+result = booking_agent.invoke(
+    {"messages": [{"role": "user", "content": "Book 1 room at Seaside BnB in Newquay"}]},
+    config)
+print(result["__interrupt__"])       # 里面有待审批的工具名和参数，展示给审核人
+
+# ② 审核人做出决定后，用同一个 thread_id 恢复执行
+result = booking_agent.invoke(
+    Command(resume={"decisions": [{"type": "approve"}]}),
+    config)
+print(result["messages"][-1].content)
+
+# 拒绝并说明理由：模型会读到理由，然后向用户解释或换个方案
+#   Command(resume={"decisions": [{"type": "reject", "message": "Price exceeds the budget"}]})
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { createAgent, humanInTheLoopMiddleware } from "langchain";
+import { Command, MemorySaver } from "@langchain/langgraph";
+
+const bookingAgent = createAgent({
+  model: "openai:gpt-5-mini",
+  tools: [checkBnbAvailability, bookRoom],           // bookRoom：假设的「真正下单」工具
+  checkpointer: new MemorySaver(),                   // 人工审批必须有检查点
+  middleware: [
+    humanInTheLoopMiddleware({
+      interruptOn: {
+        book_room: { allowedDecisions: ["approve", "edit", "reject"] },
+        check_bnb_availability: false,               // 只读工具：不需要审批
+      },
+    }),
+  ],
+});
+
+const config = { configurable: { thread_id: "booking-001" } };
+
+// ① 第一次调用：模型决定下单，中间件把它拦下，invoke 提前返回
+let result = await bookingAgent.invoke(
+  { messages: [{ role: "user", content: "Book 1 room at Seaside BnB in Newquay" }] },
+  config);
+console.log(result.__interrupt__);     // 里面有待审批的工具名和参数，展示给审核人
+
+// ② 审核人做出决定后，用同一个 thread_id 恢复执行
+result = await bookingAgent.invoke(
+  new Command({ resume: { decisions: [{ type: "approve" }] } }),
+  config);
+console.log(result.messages.at(-1)?.text);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// LangChain4j 的 AI Service 没有内置的「暂停 - 恢复」。最简单可靠的做法是把下单拆成两步：
+// 智能体只能「提交预订申请」，真正的下单由审批通过后的普通代码执行。
+public class BookingTools {
+    private final PendingBookingRepository pending;     // 存到数据库，进程重启也不会丢
+
+    @Tool("Submit a booking request for human approval. Does NOT book the room yet.")
+    public String requestBooking(@P("BnB name") String bnbName,
+                                 @P("Town") String town,
+                                 @P("Number of rooms") int numRooms) {
+        String requestId = pending.save(new BookingRequest(bnbName, town, numRooms));
+        return "Booking request " + requestId + " submitted. It will be confirmed after review.";
+    }
+}
+
+// 审批界面（与智能体无关的普通业务代码）：
+//   approve(requestId) → bookingService.book(pending.get(requestId))
+//   reject(requestId, reason) → 通知用户
+//
+// 需要真正的「图执行到一半暂停」时，用 LangGraph4j：编译时配置检查点和 interruptBefore，
+// 审批后用同一个 threadId 调用 invoke(null, config) 恢复。
+</pre>
+</div>
+</div>
+
+<h2 id="reliability">可靠性：重试、超时与出错后的去向</h2>
+
+<p>
+  演示时一切顺利，上线后模型接口会限流，网页会超时，数据库会断连。智能体一次请求要走十几步，
+  <strong>任何一步失败都不该让前面的工作白费</strong>。LangGraph 在节点级别提供了三道保险（后两项是 2026 年 5 月的 1.2 版新增的）：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="节点的三道保险：失败先重试，超过时限则中止，重试用尽后交给错误处理器决定去向">
+  <rect class="bx-b" x="20" y="54" width="130" height="62" rx="10"/><text class="ttl on-b" x="85" y="80" text-anchor="middle">节点执行</text><text class="sm" x="85" y="100" text-anchor="middle">调接口 / 调模型</text>
+  <rect class="bx-a" x="200" y="20" width="150" height="56" rx="10"/><text class="ttl on-a" x="275" y="44" text-anchor="middle">① 重试</text><text class="sm" x="275" y="62" text-anchor="middle">指数退避，最多 N 次</text>
+  <rect class="bx-a" x="200" y="94" width="150" height="56" rx="10"/><text class="ttl on-a" x="275" y="118" text-anchor="middle">② 超时</text><text class="sm" x="275" y="136" text-anchor="middle">卡住太久就中止</text>
+  <rect class="bx-r" x="410" y="54" width="150" height="62" rx="10"/><text class="ttl on-r" x="485" y="80" text-anchor="middle">③ 错误处理器</text><text class="sm" x="485" y="100" text-anchor="middle">重试用尽后才运行</text>
+  <rect class="bx-g" x="620" y="20" width="126" height="46" rx="8"/><text class="sm on-g" x="683" y="40" text-anchor="middle">跳到降级节点</text><text class="sm" x="683" y="56" text-anchor="middle">用缓存 / 备用方案</text>
+  <rect class="bx" x="620" y="104" width="126" height="46" rx="8"/><text class="sm" x="683" y="124" text-anchor="middle">写入错误说明</text><text class="sm" x="683" y="140" text-anchor="middle">让流程体面地结束</text>
+  <path class="ln" d="M152 74 L196 52" marker-end="url(#ar)"/><path class="ln" d="M152 96 L196 118" marker-end="url(#ar)"/>
+  <path class="ln-r" d="M352 52 L406 74" marker-end="url(#ar-r)"/><path class="ln-r" d="M352 118 L406 96" marker-end="url(#ar-r)"/>
+  <path class="ln" d="M562 74 L616 48" marker-end="url(#ar)"/><path class="ln" d="M562 96 L616 122" marker-end="url(#ar)"/>
+  <text class="sm on-r" x="380" y="164" text-anchor="middle">仍然失败</text>
+</svg>
+<figcaption>图 14-5　先自己扛（重试），扛不住再换路（错误处理器）</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import Command, RetryPolicy
+
+async def fetch_weather(state: AgentState):
+    """调用外部天气接口 —— 可能慢，也可能失败。超时只对 async 节点生效。"""
+    ...
+
+def weather_failed(state: AgentState, error):
+    """错误处理器：重试用尽后运行。error.node 是出错的节点名，error.error 是异常对象。"""
+    return Command(
+        update={"messages": [AIMessage(
+            "The live weather service is unavailable right now, so I can't give you "
+            "current conditions. Everything else below is still accurate.")]},
+        goto="write_answer")                       # 换一条路继续，而不是让整个请求崩掉
+
+builder = StateGraph(AgentState)
+builder.add_node(
+    "fetch_weather", fetch_weather,
+    retry_policy=RetryPolicy(max_attempts=3, initial_interval=0.5, backoff_factor=2.0),  # ①
+    timeout=10,                                    # ② 单次尝试最多 10 秒（超时本身也会触发重试）
+    error_handler=weather_failed)                  # ③
+builder.add_node("write_answer", write_answer)
+builder.add_edge(START, "fetch_weather")
+builder.add_edge("fetch_weather", "write_answer")
+builder.add_edge("write_answer", END)
+graph = builder.compile(checkpointer=checkpointer)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// LangGraph.js 支持节点级重试；节点超时和错误处理器目前只有 Python 版提供，
+// 所以后两项在节点内部自己实现。
+import { Command, StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
+
+async function fetchWeather(state: typeof MessagesAnnotation.State) {
+  try {
+    const res = await fetch(WEATHER_URL, { signal: AbortSignal.timeout(10_000) });   // ② 超时
+    if (res.status &gt;= 500) throw new Error(`Weather API ${res.status}`);              // 抛出 → 触发重试
+    return { /* …… 正常结果 …… */ };
+  } catch (e) {
+    if (isRetryable(e)) throw e;                   // 交给 retryPolicy
+    // ③ 不值得重试的错误：自己决定去向
+    return new Command({
+      update: { messages: [new AIMessage(
+        "The live weather service is unavailable right now, so I can't give you current conditions.")] },
+      goto: "write_answer",
+    });
+  }
+}
+
+const graph = new StateGraph(MessagesAnnotation)
+  .addNode("fetch_weather", fetchWeather, {
+    retryPolicy: { maxAttempts: 3, initialInterval: 500, backoffFactor: 2 },          // ①
+    ends: ["write_answer"],
+  })
+  .addNode("write_answer", writeAnswer)
+  .addEdge(START, "fetch_weather")
+  .addEdge("fetch_weather", "write_answer")
+  .addEdge("write_answer", END)
+  .compile({ checkpointer });
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 用 JDK 自带的工具就能表达同样的三道保险。
+static String fetchWeatherSafely(String town) {
+    int maxAttempts = 3;
+    long delayMs = 500;
+
+    for (int attempt = 1; attempt &lt;= maxAttempts; attempt++) {
+        try {
+            return CompletableFuture
+                    .supplyAsync(() -&gt; weatherClient.currentConditions(town))
+                    .orTimeout(10, TimeUnit.SECONDS)                 // ② 超时
+                    .join();
+        } catch (CompletionException e) {
+            if (attempt == maxAttempts) break;                       // 重试用尽
+            sleepQuietly(delayMs);                                   // ① 指数退避后重试
+            delayMs *= 2;
+        }
+    }
+    // ③ 降级：返回一段模型能读懂的说明，而不是让异常一路冒到用户面前
+    return "The live weather service is unavailable right now.";
+}
+
+// 模型调用的重试直接在模型上配置：OpenAiChatModel.builder()....maxRetries(3).timeout(Duration.ofSeconds(60))
+</pre>
+</div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 重试之前先想清楚：这一步重复执行安全吗</div>
+  <p>
+    「查天气」重试十次也无妨；「扣款」「发邮件」「下单」重试一次就可能出事故。
+    有副作用的操作要么不自动重试，要么设计成<strong>幂等</strong>的（带一个唯一的请求号，服务端发现重复就直接返回上次的结果）。
+    另外，检查点让失败的图可以<strong>从最后成功的那一步恢复</strong>，而不是从头再来 —— 这也意味着恢复时那一步之后的节点会重新执行。
+  </p>
+</div>
+
+<p>
+  1.2 版还加了<strong>优雅停机</strong>：部署新版本需要重启服务时，可以通知正在运行的图「跑完当前这一步就停」，
+  它会留下一个可恢复的检查点，新进程起来后接着跑，用户的长任务不会因为发版而中断。
+</p>
+
 <h2 id="beyond">上线之前，还有这些功课</h2>
 
 <p>记忆和护栏是重要的里程碑，但不是终点。原书最后一节列出了生产化路上的其余关卡：</p>
@@ -742,7 +1117,7 @@ Assistant: In Penzance you can visit ...                                   ← �
 <p>
   有些决定不该由智能体独自做：行程是否安全可行、突发天气或罢工时的建议、需要向商家确认的无障碍需求……
   LangGraph 的做法是让图在某个节点<strong>暂停</strong>（<code>interrupt</code>），把当前状态存入检查点，等人工审核后再<strong>恢复</strong>执行 ——
-  这正是建立在本章的检查点机制之上的。产品上线初期尤其值得这么做：人工审核的记录会成为改进护栏、提示词和知识库的依据。
+  这正是建立在本章的检查点机制之上的，上面「人工审批」一节就是最常见的一种用法。产品上线初期尤其值得这么做：人工审核的记录会成为改进护栏、提示词和知识库的依据。
 </p>
 
 <h3>输出护栏（Post-model guardrails）</h3>
@@ -767,7 +1142,7 @@ Assistant: In Penzance you can visit ...                                   ← �
 </table>
 </div>
 
-<p>LangSmith 除了追踪，也提供数据集和评估功能，可以把线上的真实追踪记录沉淀成测试用例。</p>
+<p>LangSmith 除了追踪，也提供数据集和评估功能，可以把线上的真实追踪记录沉淀成测试用例。<a href="ch15.html#eval">第 15 章</a>有一个可以照着做的最小例子。</p>
 
 <h3>部署</h3>
 <p>
@@ -782,14 +1157,14 @@ Assistant: In Penzance you can visit ...                                   ← �
   <rect class="bx-g" x="168" y="20" width="132" height="64" rx="8"/><text class="lbl on-g" x="234" y="46" text-anchor="middle">✓ 输入护栏</text><text class="sm" x="234" y="66" text-anchor="middle">路由层 + 智能体层</text>
   <rect class="bx-g" x="316" y="20" width="132" height="64" rx="8"/><text class="lbl on-g" x="382" y="46" text-anchor="middle">✓ 可观测性</text><text class="sm" x="382" y="66" text-anchor="middle">LangSmith 追踪</text>
   <rect class="bx-d" x="464" y="20" width="132" height="64" rx="8"/><text class="lbl" x="530" y="46" text-anchor="middle">☐ 长期记忆</text><text class="sm" x="530" y="66" text-anchor="middle">Store + 数据治理</text>
-  <rect class="bx-d" x="612" y="20" width="132" height="64" rx="8"/><text class="lbl" x="678" y="46" text-anchor="middle">☐ 人工介入</text><text class="sm" x="678" y="66" text-anchor="middle">中断与恢复</text>
+  <rect class="bx-g" x="612" y="20" width="132" height="64" rx="8"/><text class="lbl on-g" x="678" y="46" text-anchor="middle">✓ 人工审批</text><text class="sm" x="678" y="66" text-anchor="middle">中断与恢复</text>
   <rect class="bx-d" x="20" y="100" width="132" height="64" rx="8"/><text class="lbl" x="86" y="126" text-anchor="middle">☐ 输出护栏</text><text class="sm" x="86" y="146" text-anchor="middle">事实 / 隐私 / 格式</text>
-  <rect class="bx-d" x="168" y="100" width="132" height="64" rx="8"/><text class="lbl" x="234" y="126" text-anchor="middle">☐ 评估体系</text><text class="sm" x="234" y="146" text-anchor="middle">数据集 + 回归测试</text>
+  <rect class="bx-g" x="168" y="100" width="132" height="64" rx="8"/><text class="lbl on-g" x="234" y="126" text-anchor="middle">✓ 评估入门</text><text class="sm" x="234" y="146" text-anchor="middle">见第 15 章</text>
   <rect class="bx-d" x="316" y="100" width="132" height="64" rx="8"/><text class="lbl" x="382" y="126" text-anchor="middle">☐ 持久化存储</text><text class="sm" x="382" y="146" text-anchor="middle">Postgres 检查点</text>
-  <rect class="bx-d" x="464" y="100" width="132" height="64" rx="8"/><text class="lbl" x="530" y="126" text-anchor="middle">☐ 成本与限流</text><text class="sm" x="530" y="146" text-anchor="middle">预算、重试、降级</text>
+  <rect class="bx-g" x="464" y="100" width="132" height="64" rx="8"/><text class="lbl on-g" x="530" y="126" text-anchor="middle">✓ 重试与降级</text><text class="sm" x="530" y="146" text-anchor="middle">超时、错误处理器</text>
   <rect class="bx-d" x="612" y="100" width="132" height="64" rx="8"/><text class="lbl" x="678" y="126" text-anchor="middle">☐ 部署</text><text class="sm" x="678" y="146" text-anchor="middle">自建 / 托管平台</text>
 </svg>
-<figcaption>图 14-4　绿色是本教程已经做到的，虚线是留给你的</figcaption>
+<figcaption>图 14-6　绿色是本教程已经做到的，虚线是留给你的</figcaption>
 </figure>
 
 <h2 id="summary">小结</h2>
@@ -802,7 +1177,9 @@ Assistant: In Penzance you can visit ...                                   ← �
   <li><strong>护栏</strong>把助手约束在预定范围内。输入护栏本质上是一次「分类」：通过则放行，否则走快速出口。</li>
   <li>可以分层设防：路由层用宽规则直接返回固定拒绝语；智能体层用 <code>pre_model_hook</code> 施加更细的规则。</li>
   <li>LLM 护栏会误判，也可能被绕过，不能代替工具和数据层面的确定性权限控制。</li>
-  <li>通往生产还需要：长期记忆、人工介入、输出护栏、系统化评估、可靠的部署。</li>
+  <li>用 <code>create_agent</code> 时，护栏、隐私脱敏、人工审批都可以用<strong>中间件</strong>实现；人工审批依赖检查点来暂停和恢复。</li>
+  <li>节点级的<strong>重试、超时、错误处理器</strong>让单步失败不至于拖垮整个请求；有副作用的操作重试前要保证幂等。</li>
+  <li>通往生产还需要：长期记忆、输出护栏、系统化评估、可靠的部署。</li>
 </ul>
 
 <div class="exercise">
@@ -815,15 +1192,6 @@ Assistant: In Penzance you can visit ...                                   ← �
     <li>改进护栏：让分类器同时看到最近 4 条消息，这样「那里呢？」这类追问不会被误拦。</li>
     <li>思考题：如果要加一个「真的下单预订」的工具，你会在哪里加入人工确认？确认前后的状态应该怎么保存？</li>
   </ol>
-</div>
-
-<div class="box key">
-  <div class="t">&#127881; 恭喜你读完了全部 14 章</div>
-  <p>
-    回头看这条路：从一行「文字接龙」开始，到提示词、链、图，再到 RAG 的入库与检索、工具调用、多智能体协作、MCP、记忆和护栏。
-    这些零件没有哪一个是魔法 —— 它们都是在围绕同一个核心做文章：<strong>在合适的时机，把合适的信息和合适的工具交给模型</strong>。
-    接下来最好的学习方式，是挑一个你自己真正关心的问题，动手做一个出来。
-  </p>
 </div>
 
 <div id="pager"></div>

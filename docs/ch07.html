@@ -621,7 +621,7 @@ System.out.println(chatbot.answer(
 <div class="box warn">
   <div class="t">&#9888; 这种记忆有三个局限</div>
   <ul>
-    <li><strong>会越来越长</strong>：每轮都把全部历史发出去，token 费用线性增长，迟早撑爆上下文窗口。生产环境要截断（只留最近 N 轮）或把旧对话压缩成摘要。Java 版的 <code>MessageWindowChatMemory</code> 做的就是截断。</li>
+    <li><strong>会越来越长</strong>：每轮都把全部历史发出去，token 费用线性增长，迟早撑爆上下文窗口。生产环境要截断（只留最近 N 轮）或把旧对话压缩成摘要。Java 版的 <code>MessageWindowChatMemory</code> 做的就是截断。第 15 章系统地讲这件事。</li>
     <li><strong>检索没用上历史</strong>：这里拿去检索的仍然是原始问题「然后他们做了什么？」，它本身几乎没有可检索的信息。改进办法是先让 LLM 结合历史把它改写成完整的问题 —— 第 9 章的内容。</li>
     <li><strong>只活在内存里</strong>：程序一重启就没了，而且所有用户共用一份。第 14 章用 LangGraph 的检查点解决。</li>
   </ul>

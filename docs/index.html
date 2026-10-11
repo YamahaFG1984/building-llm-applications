@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AI 智能体与应用开发教程 · LangChain、LangGraph 与 MCP</title>
-<meta name="description" content="面向初学者的 14 章中文教程：从提示词、摘要、RAG 到工具智能体、多智能体与 MCP，全部示例提供 Python、TypeScript、Java 三种语言。">
+<meta name="description" content="面向初学者的 15 章中文教程：从提示词、摘要、RAG 到工具智能体、多智能体与 MCP，全部示例提供 Python、TypeScript、Java 三种语言。">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body data-chapter="0">
@@ -13,7 +13,7 @@
 <main>
 
 <div class="hero">
-  <span class="chapter-eyebrow">面向初学者的 14 章教程</span>
+  <span class="chapter-eyebrow">面向初学者的 15 章教程</span>
   <h1>AI 智能体与应用开发：从提示词到多智能体</h1>
   <p class="sub">
     这套教程整理自 Roberto Infante 的《AI Agents and Applications — With LangChain, LangGraph, and MCP》
@@ -55,7 +55,7 @@
   <rect class="bx-a" x="502" y="60" width="226" height="64" rx="10"/>
   <text class="ttl on-a" x="615" y="84" text-anchor="middle">③ 智能体 Agent</text>
   <text class="sm" x="615" y="103" text-anchor="middle">自己决定调用哪些工具、走哪条路</text>
-  <text class="sm" x="615" y="318" text-anchor="middle">第 5、11–14 章</text>
+  <text class="sm" x="615" y="318" text-anchor="middle">第 5、11–15 章</text>
 
   <path class="ln-d" d="M157 230 V214 H330" marker-end="url(#ar)"/>
   <path class="ln-d" d="M377 148 V132 H560" marker-end="url(#ar)"/>
@@ -91,6 +91,8 @@
   <tr><td>向量库</td><td><code>langchain-chroma</code></td><td><code>@langchain/community</code> 的 Chroma</td><td><code>langchain4j-chroma</code></td></tr>
   <tr><td>MCP</td><td><code>fastmcp</code> + <code>langchain-mcp-adapters</code></td><td><code>@modelcontextprotocol/sdk</code> + <code>@langchain/mcp-adapters</code></td><td>Spring AI MCP Server + <code>langchain4j-mcp</code></td></tr>
   <tr><td>结构化输出</td><td>Pydantic 模型</td><td>Zod schema</td><td>Java <code>record</code> / POJO</td></tr>
+  <tr><td>智能体扩展点</td><td><code>create_agent</code> 的中间件</td><td><code>createAgent</code> 的中间件</td><td>护栏注解、监听器、构建器选项</td></tr>
+  <tr><td>评估</td><td><code>langsmith</code></td><td><code>langsmith</code></td><td>普通测试代码（JUnit）</td></tr>
 </table>
 </div>
 
@@ -199,6 +201,7 @@ public class Hello {
   <li><strong>按顺序读前五章</strong>提示词 → 链 → 图，这是后面一切的地基。第 4 章的研究引擎会在第 5 章被改造成图。</li>
   <li><strong>RAG 部分（6–10）可以边读边挑</strong>第 6、7 章必读；第 8–10 章是「效果不好时的工具箱」，遇到具体问题再回来查也行。</li>
   <li><strong>智能体部分（11–14）是连续剧</strong>同一个旅行助手从单工具长成多智能体，再接上 MCP、记忆和护栏，建议一口气读完。</li>
+  <li><strong>第 15 章是原书之外的补充</strong>上下文工程与评估。第 11–14 章里标着「当前写法」的小节也是后补的，反映 2026 年下半年各框架的新接口。</li>
   <li><strong>每章末尾都有动手练习</strong>不动手，看十遍也只是「眼睛会了」。</li>
 </ol>
 
@@ -209,6 +212,7 @@ public class Hello {
 <p>
   内容框架与 Python 示例来自 Roberto Infante 著、Manning 出版的
   <em>AI Agents and Applications: With LangChain, LangGraph, and MCP</em> 及其配套代码仓库（本仓库的 <code>ch01</code>–<code>ch11</code>、<code>apE</code> 目录）。
+  第 15 章以及第 11–14 章中标注「当前写法」的小节不在原书范围内，是依据各项目 2026 年 10 月时的官方文档补充的。
   本教程是学习笔记性质的重新整理：文字是重新写的，图是重新画的，并不能替代原书 —— 想看完整论述、运行输出和 LangSmith 截图，请阅读原书。
 </p>
 

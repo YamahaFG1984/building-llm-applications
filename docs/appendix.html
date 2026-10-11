@@ -6,7 +6,7 @@
 <title>附录 · 环境、选模型与本地 LLM — AI 智能体与应用开发教程</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
-<body data-chapter="15">
+<body data-chapter="16">
 <div id="app">
 <aside id="sidebar"></aside>
 <main>
@@ -14,7 +14,7 @@
 <span class="chapter-eyebrow">附录 A–E</span>
 <h1>附录：环境、选模型与本地 LLM</h1>
 <p class="lede">
-  这一页汇总了原书五个附录里对动手最有帮助的内容：怎么把环境搭起来、怎么挑模型、
+  这一页汇总了原书五个附录里对动手最有帮助的内容（个别版本信息按 2026 年 10 月的情况做了补充）：怎么把环境搭起来、怎么挑模型、
   以及怎么<strong>不花一分钱</strong>在自己电脑上跑开源模型来完成前面各章的练习。
 </p>
 
@@ -82,6 +82,12 @@ LANGSMITH_PROJECT=travel-assistant
 #   langchain-chroma==1.0.0   chromadb==1.3.0
 #   langgraph-supervisor==0.0.30
 #   langchain-mcp-adapters==0.1.12   fastmcp==2.10.5
+#
+# 第 11–15 章里标注「当前写法」的补充示例需要更新的版本（2026 年 10 月时）：
+#   langchain>=1.4      create_agent、中间件、langchain.mcp（需安装 langchain[mcp]）
+#   langgraph>=1.2      节点超时、错误处理器
+#   deepagents>=0.7     第 12 章的 Deep Agents
+#   langsmith           第 15 章的评估
 </pre>
 </div>
 <div class="code" data-lang="ts" data-file="Node.js 项目初始化">
@@ -99,8 +105,9 @@ LANGSMITH_PROJECT=travel-assistant
 // 之后按章节需要再加：
 //   第 4 章   cheerio duck-duck-scrape
 //   第 6–10 章 chromadb @chroma-core/default-embed better-sqlite3
-//   第 12 章  @langchain/langgraph-supervisor
-//   第 13 章  @modelcontextprotocol/sdk @langchain/mcp-adapters express
+//   第 12 章  @langchain/langgraph-supervisor deepagents
+//   第 13 章  @modelcontextprotocol/sdk @langchain/mcp-adapters@^2 express
+//   第 15 章  langsmith
 //
 // 运行任意示例：npx tsx 文件名.ts
 </pre>
@@ -122,6 +129,7 @@ LANGSMITH_PROJECT=travel-assistant
 //   第 5、14 章 org.bsc.langgraph4j:langgraph4j-core
 //   第 6–10 章  langchain4j-chroma、langchain4j-embeddings-all-minilm-l6-v2
 //               org.xerial:sqlite-jdbc
+//   第 12 章    langchain4j-agentic（实验性模块，不在 BOM 里，需单独写版本号）
 //   第 13 章    langchain4j-mcp
 //               org.springframework.ai:spring-ai-starter-mcp-server-webmvc（写服务器）
 </pre>
@@ -251,7 +259,7 @@ sqlite3 cornwall_hotels.db &lt; cornwall_hotels_schema.sql
 
 <p>
   几乎所有本地推理引擎都提供一个<strong>和 OpenAI 一模一样的 REST 接口</strong>。
-  这意味着前面 14 章的代码几乎不用动，只要把请求地址从 OpenAI 的服务器改成 <code>localhost</code>：
+  这意味着前面各章的代码几乎不用动，只要把请求地址从 OpenAI 的服务器改成 <code>localhost</code>：
 </p>
 
 <figure>
@@ -500,6 +508,12 @@ public class LlmModels {
   <tr><td>检查点 Checkpoint</td><td>图执行每一步后的状态快照</td><td>第 14 章</td></tr>
   <tr><td>线程 Thread</td><td>一场连续的对话，用 <code>thread_id</code> 标识</td><td>第 14 章</td></tr>
   <tr><td>护栏 Guardrail</td><td>在模型前后拦截不合规输入 / 输出的检查</td><td>第 14 章</td></tr>
+  <tr><td>中间件 Middleware</td><td>插在智能体循环固定位置上的可复用逻辑</td><td>第 11 章</td></tr>
+  <tr><td>Deep Agents</td><td>带文件系统、子智能体和上下文管理的智能体外壳</td><td>第 12 章</td></tr>
+  <tr><td>A2A</td><td>智能体与智能体之间协作的协议</td><td>第 13 章</td></tr>
+  <tr><td>人工审批 HITL</td><td>关键操作前暂停，等人批准后恢复</td><td>第 14 章</td></tr>
+  <tr><td>上下文工程</td><td>管理模型每一步能看到的信息：写出去、选进来、压缩、隔离</td><td>第 15 章</td></tr>
+  <tr><td>LLM 裁判</td><td>用另一个模型给回答打分的评估方式</td><td>第 15 章</td></tr>
 </table>
 </div>
 

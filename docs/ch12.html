@@ -27,6 +27,7 @@
     <li>用路由器模式把问题分发给合适的智能体</li>
     <li>理解路由器的局限，并用 Supervisor 模式处理跨领域的问题</li>
     <li>在两种模式之间做出取舍</li>
+    <li>了解「子智能体即工具」的轻量写法和 Deep Agents</li>
   </ul>
 </div>
 
@@ -648,6 +649,237 @@ System.out.println(travelAssistant.chat(
   <div class="card"><h4>流水线式</h4><p>智能体按固定顺序接力：研究员 → 写手 → 审稿人。本质上是第 5 章的工作流，只是每个节点是一个智能体。</p></div>
 </div>
 
+<h2 id="deep">另一条路线：把子智能体当工具，以及 Deep Agents</h2>
+
+<p>
+  Supervisor 模式这两年有了更轻的写法，也有了更「全套」的现成方案。两者都值得知道。
+</p>
+
+<h3>更轻：子智能体就是一个工具</h3>
+
+<p>
+  上面「create_supervisor 在背后做了什么」已经点破：主管只是一个 ReAct 智能体，它的工具恰好是别的智能体。
+  既然如此，可以不依赖专门的库，直接<strong>把子智能体包成工具</strong>交给 <code>create_agent</code>。
+  LangChain 官方文档现在也更推荐这种写法，因为主管看到什么、子智能体收到什么，都由你完全控制。
+</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from langchain.agents import create_agent
+from langchain_core.tools import tool
+
+# 两个子智能体：照常创建
+travel_info_agent = create_agent("openai:gpt-5-mini", tools=TOOLS,
+    system_prompt="You search travel information and get the weather forecast ...")
+accommodation_booking_agent = create_agent("openai:gpt-5-mini", tools=BOOKING_TOOLS,
+    system_prompt="You check hotel and BnB room availability and price in Cornwall ...")
+
+# 把每个子智能体包成一个工具。工具描述 = 主管选择它的依据
+@tool(description="Ask the travel information agent. It can search travel information about "
+                  "destinations in Cornwall and get the weather forecast for a town.")
+def ask_travel_info_agent(task: str) -&gt; str:
+    result = travel_info_agent.invoke({"messages": [{"role": "user", "content": task}]})
+    return result["messages"][-1].content        # 只把最终结论交回主管，中间过程不带回去
+
+@tool(description="Ask the accommodation booking agent. It can check hotel and BnB room "
+                  "availability and prices for a town in Cornwall.")
+def ask_accommodation_booking_agent(task: str) -&gt; str:
+    result = accommodation_booking_agent.invoke({"messages": [{"role": "user", "content": task}]})
+    return result["messages"][-1].content
+
+travel_assistant = create_agent(
+    "openai:gpt-5",                              # 主管用更强的模型
+    tools=[ask_travel_info_agent, ask_accommodation_booking_agent],
+    system_prompt="You coordinate two specialist agents. Give each one a complete, "
+                  "self-contained task description, then combine their answers.")
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { createAgent } from "langchain";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+
+// 把每个子智能体包成一个工具。工具描述 = 主管选择它的依据
+const askTravelInfoAgent = tool(
+  async ({ task }) =&gt; {
+    const result = await travelInfoAgent.invoke({ messages: [{ role: "user", content: task }] });
+    return result.messages.at(-1)?.text ?? "";    // 只把最终结论交回主管
+  },
+  { name: "ask_travel_info_agent",
+    description: "Ask the travel information agent. It can search travel information about " +
+                 "destinations in Cornwall and get the weather forecast for a town.",
+    schema: z.object({ task: z.string().describe("A complete, self-contained task") }) });
+
+const askAccommodationBookingAgent = tool(
+  async ({ task }) =&gt; {
+    const result = await accommodationBookingAgent.invoke({ messages: [{ role: "user", content: task }] });
+    return result.messages.at(-1)?.text ?? "";
+  },
+  { name: "ask_accommodation_booking_agent",
+    description: "Ask the accommodation booking agent. It can check hotel and BnB room " +
+                 "availability and prices for a town in Cornwall.",
+    schema: z.object({ task: z.string().describe("A complete, self-contained task") }) });
+
+const travelAssistant = createAgent({
+  model: "openai:gpt-5",                          // 主管用更强的模型
+  tools: [askTravelInfoAgent, askAccommodationBookingAgent],
+  systemPrompt: "You coordinate two specialist agents. Give each one a complete, " +
+                "self-contained task description, then combine their answers.",
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="官方写法：langchain4j-agentic">
+<pre>
+// 上一节的 Java 版正是「把智能体当工具」的手写形式。
+// LangChain4j 现在有专门的 agentic 模块，把这件事做成了声明式的构建器。
+// 依赖：dev.langchain4j:langchain4j-agentic（该模块仍标注为实验性，且不在 BOM 里，需要单独写版本号）
+import dev.langchain4j.agentic.Agent;
+import dev.langchain4j.agentic.AgenticServices;
+import dev.langchain4j.agentic.supervisor.SupervisorAgent;
+import dev.langchain4j.agentic.supervisor.SupervisorResponseStrategy;
+
+public interface TravelInfoAgent {
+    @SystemMessage("You search travel information and get the weather forecast ...")
+    @UserMessage("{{request}}")
+    @Agent("Searches travel information about Cornwall and gets the weather forecast for a town")
+    String answer(@V("request") String request);          // @Agent 的描述 = 主管选择它的依据
+}
+
+public interface AccommodationBookingAgent {
+    @SystemMessage("You check hotel and BnB room availability and price in Cornwall ...")
+    @UserMessage("{{request}}")
+    @Agent("Checks hotel and BnB room availability and prices for a town in Cornwall")
+    String answer(@V("request") String request);
+}
+
+var travelInfoAgent = AgenticServices.agentBuilder(TravelInfoAgent.class)
+        .chatModel(llm).tools(new TravelTools(kb)).build();
+var bookingAgent = AgenticServices.agentBuilder(AccommodationBookingAgent.class)
+        .chatModel(llm).tools(new BookingTools()).build();
+
+SupervisorAgent travelAssistant = AgenticServices.supervisorBuilder()
+        .chatModel(plannerModel)                                  // 主管用更强的模型
+        .subAgents(travelInfoAgent, bookingAgent)
+        .responseStrategy(SupervisorResponseStrategy.SUMMARY)     // 汇总各子智能体的结果作答
+        .build();
+
+System.out.println(travelAssistant.invoke(
+        "Find me a beach town in Cornwall with nice weather, and tell me which hotels have rooms there."));
+
+// 同一个模块还提供了固定流程的构建器 —— 也就是第 5 章说的「工作流」：
+//   AgenticServices.sequenceBuilder()     顺序执行
+//   AgenticServices.loopBuilder()         循环，直到满足退出条件或达到最大次数
+//   AgenticServices.parallelBuilder()     并行
+//   AgenticServices.conditionalBuilder()  按条件选择（相当于路由器）
+</pre>
+</div>
+</div>
+
+<h3>更全套：Deep Agents</h3>
+
+<p>
+  观察 Claude Code、Deep Research 这类能<strong>连续工作很久</strong>的智能体，会发现它们有几样共同的装备。
+  LangChain 把这些装备打包成了一个现成的「外壳」，叫 <strong>Deep Agents</strong>（<code>deepagents</code> 包，建立在 LangGraph 之上）：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="Deep Agents 在普通工具循环之外附带的四样装备：文件系统、子智能体、上下文管理、可选的待办清单">
+  <rect class="bx-a" x="280" y="76" width="200" height="68" rx="12"/>
+  <text class="ttl on-a" x="380" y="104" text-anchor="middle">模型 + 工具循环</text><text class="sm" x="380" y="124" text-anchor="middle">第 11 章的那个 ReAct 循环</text>
+  <rect class="bx-b" x="20" y="16" width="210" height="72" rx="10"/>
+  <text class="ttl on-b" x="125" y="40" text-anchor="middle">虚拟文件系统</text>
+  <text class="sm" x="125" y="60" text-anchor="middle">read_file / write_file / grep …</text><text class="sm" x="125" y="76" text-anchor="middle">大段资料先存成文件，用时再读</text>
+  <rect class="bx-g" x="530" y="16" width="210" height="72" rx="10"/>
+  <text class="ttl on-g" x="635" y="40" text-anchor="middle">子智能体</text>
+  <text class="sm" x="635" y="60" text-anchor="middle">把子任务派出去，只收回结论</text><text class="sm" x="635" y="76" text-anchor="middle">主上下文保持干净</text>
+  <rect class="bx-p" x="20" y="132" width="210" height="72" rx="10"/>
+  <text class="ttl on-p" x="125" y="156" text-anchor="middle">上下文管理</text>
+  <text class="sm" x="125" y="176" text-anchor="middle">对话过长时自动摘要</text><text class="sm" x="125" y="192" text-anchor="middle">（中间件实现）</text>
+  <rect class="bx-d" x="530" y="132" width="210" height="72" rx="10"/>
+  <text class="ttl" x="635" y="156" text-anchor="middle">待办清单（可选）</text>
+  <text class="sm" x="635" y="176" text-anchor="middle">先列计划，逐项打勾</text><text class="sm" x="635" y="192" text-anchor="middle">0.7 起需要自己加上</text>
+  <path class="ln" d="M232 60 L276 92" marker-end="url(#ar)"/><path class="ln" d="M528 60 L484 92" marker-end="url(#ar)"/>
+  <path class="ln" d="M232 160 L276 130" marker-end="url(#ar)"/><path class="ln-d" d="M528 160 L484 130" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 12-4　Deep Agents = 工具循环 + 让它能干长活的几样装备</figcaption>
+</figure>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+# pip install deepagents
+from deepagents import create_deep_agent
+
+travel_planner = create_deep_agent(
+    model="openai:gpt-5",
+    tools=[search_travel_info, weather_forecast, check_bnb_availability],
+    system_prompt="You are a travel planner for Cornwall. Research thoroughly, save your "
+                  "notes to files as you go, then write a day-by-day itinerary.",
+    subagents=[{                                   # 需要时可以声明专职的子智能体
+        "name": "accommodation-researcher",
+        "description": "Finds and compares hotel and BnB options for a given town",
+        "system_prompt": "You research accommodation options and report a short comparison.",
+        "tools": [check_bnb_availability],
+    }],
+)
+
+result = travel_planner.invoke({"messages": [{"role": "user", "content":
+    "Plan a 4-day family trip to West Cornwall in July, including where to stay."}]})
+print(result["messages"][-1].content)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// npm install deepagents
+import { createDeepAgent } from "deepagents";
+
+const travelPlanner = createDeepAgent({
+  model: "openai:gpt-5",
+  tools: [searchTravelInfo, weatherForecast, checkBnbAvailability],
+  systemPrompt: "You are a travel planner for Cornwall. Research thoroughly, save your " +
+                "notes to files as you go, then write a day-by-day itinerary.",
+  subagents: [{                                    // 需要时可以声明专职的子智能体
+    name: "accommodation-researcher",
+    description: "Finds and compares hotel and BnB options for a given town",
+    systemPrompt: "You research accommodation options and report a short comparison.",
+    tools: [checkBnbAvailability],
+  }],
+});
+
+const result = await travelPlanner.invoke({ messages: [{ role: "user", content:
+  "Plan a 4-day family trip to West Cornwall in July, including where to stay." }] });
+console.log(result.messages.at(-1)?.text);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// Deep Agents 目前只有 Python 和 TypeScript 版本。
+// Java 里最接近的组合是上面的 langchain4j-agentic：
+//   - supervisorBuilder()            对应「子智能体」
+//   - AgenticScope（共享的键值状态） 对应「把中间结果放在上下文之外」
+//   - 自己提供读写文件的 @Tool        对应「虚拟文件系统」
+//
+// 思路是相通的：让主智能体只拿到结论，把冗长的中间材料留在别处。
+</pre>
+</div>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>手写图（第 11 章）</th><th>create_agent + 中间件</th><th>Deep Agents</th></tr>
+  <tr><td>你得到什么</td><td>完全的控制权</td><td>标准循环 + 可插拔的扩展点</td><td>开箱即用的全套长任务装备</td></tr>
+  <tr><td>适合</td><td>流程有特殊结构要求</td><td>大多数产品里的智能体</td><td>研究、写作、编码这类开放式长任务</td></tr>
+  <tr><td>代价</td><td>代码多</td><td>要理解中间件的执行顺序</td><td>默认行为多，token 消耗大，可预测性最低</td></tr>
+</table>
+</div>
+
+<p>
+  这些装备为什么管用，其实是同一个道理：<strong>别把所有东西都堆在主对话里</strong>。
+  这个话题叫「上下文工程」，<a href="ch15.html">第 15 章</a>专门讲。
+</p>
+
 <h2 id="observe">用 LangSmith 看多智能体的执行</h2>
 
 <p>多智能体系统的追踪记录是一棵更深的树。以那个跨领域问题为例，你会看到类似这样的结构：</p>
@@ -683,6 +915,8 @@ travel_assistant（supervisor）
   <li><strong>路由器模式</strong>：分类后单程移交。简单、快、便宜，但处理不了需要多个智能体协作的问题。</li>
   <li><strong>Supervisor 模式</strong>：主管反复派发任务并收回结果，能串联多个智能体、传递中间结果。更强，也更慢更贵。</li>
   <li>Supervisor 的本质是「把智能体当工具用」的 ReAct 循环。</li>
+  <li>不依赖专门的库也能实现 Supervisor：把子智能体包成工具交给 <code>create_agent</code>；Java 可以用 <code>langchain4j-agentic</code> 模块。</li>
+  <li><strong>Deep Agents</strong> 是带文件系统、子智能体和上下文管理的现成外壳，适合开放式的长任务。</li>
   <li>先用最简单的结构满足需求，确有必要再加协调层。</li>
 </ul>
 

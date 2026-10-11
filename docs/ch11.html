@@ -27,6 +27,7 @@
     <li>用 LangGraph 从零搭一个单工具的旅行信息智能体</li>
     <li>扩展成多工具智能体，并用系统提示词引导它正确使用工具</li>
     <li>用预置的 ReAct 智能体把几十行代码缩成几行</li>
+    <li>认识当前的标准写法 <code>create_agent</code> 和中间件机制</li>
   </ul>
 </div>
 
@@ -850,9 +851,8 @@ System.out.println(travelInfoAgent.chat("Suggest two Cornwall beach towns with n
 <div class="box note">
   <div class="t">&#9432; 关于函数名</div>
   <p>
-    仓库基于 LangGraph 1.0，使用的是 <code>langgraph.prebuilt.create_react_agent</code>。
-    在 LangChain 1.0 中，官方推荐的新入口是 <code>langchain.agents.create_agent</code>（TypeScript 里是 <code>langchain</code> 包的 <code>createAgent</code>），
-    两者思路相同、参数略有差异。读到不同教程用了不同名字时不必困惑。
+    仓库基于 LangGraph 1.0，使用的是 <code>langgraph.prebuilt.create_react_agent</code>，所以这一节照此讲解。
+    目前官方推荐的入口是 <code>langchain.agents.create_agent</code>，下一节专门介绍它和它带来的<strong>中间件</strong>机制。
   </p>
 </div>
 
@@ -863,6 +863,264 @@ System.out.println(travelInfoAgent.chat("Suggest two Cornwall beach towns with n
   <tr><td>可定制性</td><td>完全可控：可以在任意位置插入节点（审批、日志、改写……）</td><td>通过参数和钩子定制（如第 14 章用的 <code>pre_model_hook</code>）</td></tr>
   <tr><td>适合</td><td>学习原理；流程有特殊要求</td><td>绝大多数标准场景；作为多智能体系统里的「零件」</td></tr>
 </table>
+</div>
+
+<h2 id="middleware">当前的标准写法：create_agent 与中间件</h2>
+
+<p>
+  仓库基于 LangGraph 1.0 的 <code>create_react_agent</code>。在 LangChain 1.x 里，官方推荐的入口已经换成
+  <code>langchain.agents.create_agent</code>（TypeScript 是 <code>langchain</code> 包的 <code>createAgent</code>）。
+  循环还是同一个循环，但多了一个重要的扩展机制：<strong>中间件</strong>（middleware）。
+</p>
+
+<p>
+  如果你写过 Web 后端，这个词不陌生：请求进来和响应出去的路上，可以插入一层层处理逻辑。
+  智能体的中间件同理 —— 在 ReAct 循环的几个固定位置留了「插槽」，你可以在不改图结构的前提下加进自己的逻辑：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="中间件的钩子位置：before_agent、before_model、wrap_model_call、after_model、wrap_tool_call、after_agent">
+  <rect class="bx" x="20" y="116" width="80" height="44" rx="8"/><text class="lbl" x="60" y="143" text-anchor="middle">用户输入</text>
+  <rect class="bx-p" x="130" y="116" width="96" height="44" rx="8"/><text class="mono on-p" x="178" y="143" text-anchor="middle">before_agent</text>
+  <rect class="bx-p" x="256" y="60" width="100" height="40" rx="8"/><text class="mono on-p" x="306" y="85" text-anchor="middle">before_model</text>
+  <rect class="bx-g" x="386" y="34" width="170" height="92" rx="12"/>
+  <text class="mono on-g" x="471" y="54" text-anchor="middle">wrap_model_call</text>
+  <rect class="bx-a" x="406" y="64" width="130" height="48" rx="8"/><text class="ttl on-a" x="471" y="93" text-anchor="middle">调用模型</text>
+  <rect class="bx-p" x="586" y="60" width="100" height="40" rx="8"/><text class="mono on-p" x="636" y="85" text-anchor="middle">after_model</text>
+  <rect class="bx-g" x="386" y="176" width="170" height="92" rx="12"/>
+  <text class="mono on-g" x="471" y="196" text-anchor="middle">wrap_tool_call</text>
+  <rect class="bx-b" x="406" y="206" width="130" height="48" rx="8"/><text class="ttl on-b" x="471" y="235" text-anchor="middle">执行工具</text>
+  <rect class="bx-p" x="586" y="200" width="96" height="44" rx="8"/><text class="mono on-p" x="634" y="227" text-anchor="middle">after_agent</text>
+  <text class="lbl" x="724" y="227" text-anchor="middle">答案</text>
+
+  <path class="ln" d="M102 138 H126" marker-end="url(#ar)"/>
+  <path class="ln" d="M228 130 L252 96" marker-end="url(#ar)"/>
+  <path class="ln" d="M358 80 H382" marker-end="url(#ar)"/>
+  <path class="ln" d="M558 80 H582" marker-end="url(#ar)"/>
+  <path class="ln-b" d="M620 102 V150 H560 V200" marker-end="url(#ar-b)"/><text class="sm on-b" x="606" y="146" text-anchor="end">要调工具</text>
+  <path class="ln-b" d="M384 222 H306 V104" marker-end="url(#ar-b)"/><text class="sm on-b" x="316" y="170">结果交回模型</text>
+  <path class="ln-g" d="M660 102 V196" marker-end="url(#ar-g)"/><text class="sm on-g" x="668" y="150">不调工具</text>
+  <path class="ln" d="M684 222 H704" marker-end="url(#ar)"/>
+  <text class="sm" x="20" y="208">紫色：在某一步之前 / 之后运行，</text>
+  <text class="sm" x="20" y="224">可以改状态、提前结束</text>
+  <text class="sm" x="20" y="252">绿色：把某一步「包」起来，</text>
+  <text class="sm" x="20" y="268">可以改输入、重试、换模型</text>
+</svg>
+<figcaption>图 11-6　中间件的六个插槽</figcaption>
+</figure>
+
+<h3>先用现成的</h3>
+
+<p>大量常见需求已经有内置中间件，配置一下就能用：</p>
+
+<div class="tw">
+<table>
+  <tr><th>内置中间件</th><th>解决什么问题</th><th>对应本教程</th></tr>
+  <tr><td><code>ModelCallLimitMiddleware</code> / <code>ToolCallLimitMiddleware</code></td><td>限制模型或工具的调用次数，防止「停不下来」</td><td>本章「三个常见失控方式」</td></tr>
+  <tr><td><code>ModelRetryMiddleware</code> / <code>ToolRetryMiddleware</code></td><td>失败后按指数退避自动重试</td><td>第 14 章</td></tr>
+  <tr><td><code>ModelFallbackMiddleware</code></td><td>主模型不可用时自动换备用模型</td><td>第 14 章</td></tr>
+  <tr><td><code>SummarizationMiddleware</code></td><td>对话太长时把旧消息压缩成摘要</td><td>第 7、15 章</td></tr>
+  <tr><td><code>ContextEditingMiddleware</code></td><td>上下文太大时清掉旧的工具结果</td><td>第 15 章</td></tr>
+  <tr><td><code>HumanInTheLoopMiddleware</code></td><td>指定的工具执行前暂停，等人批准 / 修改 / 拒绝</td><td>第 14 章</td></tr>
+  <tr><td><code>PIIMiddleware</code></td><td>识别并遮盖邮箱、信用卡号等敏感信息</td><td>第 14 章</td></tr>
+  <tr><td><code>LLMToolSelectorMiddleware</code></td><td>工具很多时，先用小模型挑出相关的几个</td><td>第 12、15 章</td></tr>
+  <tr><td><code>TodoListMiddleware</code></td><td>给智能体一个待办清单工具，用于规划多步任务</td><td>第 12 章</td></tr>
+</table>
+</div>
+
+<div class="tabs">
+<div class="code" data-lang="python" data-file="用 create_agent 重写旅行信息智能体">
+<pre>
+from langchain.agents import create_agent
+from langchain.agents.middleware import (
+    ModelCallLimitMiddleware, ToolRetryMiddleware, SummarizationMiddleware)
+
+travel_info_agent = create_agent(
+    model="openai:gpt-4.1-mini",                 # 「厂商:模型名」的字符串，或一个模型对象
+    tools=[search_travel_info, weather_forecast],
+    system_prompt="You are a helpful assistant that can search travel information and get "
+                  "the weather forecast. Only use the tools to find the information you "
+                  "need (including town names).",
+    middleware=[
+        ModelCallLimitMiddleware(run_limit=8, exit_behavior="end"),   # 一次请求最多调 8 次模型
+        ToolRetryMiddleware(max_retries=3, backoff_factor=2.0, initial_delay=1.0),
+        SummarizationMiddleware(                                      # 超过 4000 token 就压缩
+            model="openai:gpt-5-nano",
+            trigger=("tokens", 4000),
+            keep=("messages", 20)),
+    ],
+)
+
+# 调用方式和返回值与之前完全相同
+result = travel_info_agent.invoke({"messages": [
+    {"role": "user", "content": "Suggest two Cornwall beach towns with nice weather"}]})
+print(result["messages"][-1].content)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="用 createAgent 重写旅行信息智能体">
+<pre>
+import {
+  createAgent, modelCallLimitMiddleware, toolRetryMiddleware, summarizationMiddleware,
+} from "langchain";
+
+const travelInfoAgent = createAgent({
+  model: "openai:gpt-4.1-mini",                // 「厂商:模型名」的字符串，或一个模型对象
+  tools: [searchTravelInfo, weatherForecast],
+  systemPrompt: "You are a helpful assistant that can search travel information and get " +
+                "the weather forecast. Only use the tools to find the information you " +
+                "need (including town names).",
+  middleware: [
+    modelCallLimitMiddleware({ runLimit: 8, exitBehavior: "end" }),   // 最多调 8 次模型
+    toolRetryMiddleware({ maxRetries: 3, backoffFactor: 2.0, initialDelayMs: 1000 }),
+    summarizationMiddleware({                                         // 超过 4000 token 就压缩
+      model: "openai:gpt-5-nano",
+      trigger: { tokens: 4000 },
+      keep: { messages: 20 },
+    }),
+  ],
+});
+
+// 调用方式和返回值与之前完全相同
+const result = await travelInfoAgent.invoke({
+  messages: [{ role: "user", content: "Suggest two Cornwall beach towns with nice weather" }],
+});
+console.log(result.messages.at(-1)?.text);
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="LangChain4j 的对应做法">
+<pre>
+// LangChain4j 没有「中间件」这个统一概念，同类能力分散在 AI Service 构建器的各个选项上。
+// （选项名称随版本略有调整，以你所用版本的文档为准。）
+TravelInfoAgent travelInfoAgent = AiServices.builder(TravelInfoAgent.class)
+        .chatModel(llm)
+        .tools(new TravelTools(kb))
+
+        // 相当于调用次数上限：连续的工具调用轮数超过它就报错停下
+        .maxSequentialToolsInvocations(8)
+
+        // 相当于工具出错时的处理：把可读的错误信息交回模型，让它自己纠正
+        .toolExecutionErrorHandler((error, context) -&gt;
+                ToolErrorHandlerResult.text("Tool failed: " + error.getMessage()))
+
+        // 相当于控制上下文长度：只保留最近的若干条消息
+        .chatMemory(MessageWindowChatMemory.withMaxMessages(20))
+        .build();
+
+// 模型调用的重试在模型上配置：
+//   OpenAiChatModel.builder()....maxRetries(3).build()
+// 输入 / 输出检查用护栏（@InputGuardrails / @OutputGuardrails），见第 14 章。
+</pre>
+</div>
+</div>
+
+<h3>自己写一个</h3>
+
+<p>内置的不够用时，自定义中间件也只是一个函数。下面两个例子各对应一类插槽：</p>
+
+<div class="tabs">
+<div class="code" data-lang="python">
+<pre>
+from typing import Any, Callable
+from langchain.agents.middleware import before_model, wrap_tool_call, AgentState
+from langchain.messages import AIMessage, ToolMessage
+from langchain.tools.tool_node import ToolCallRequest
+from langgraph.runtime import Runtime
+from langgraph.types import Command
+
+# —— 「之前 / 之后」型：读状态，返回更新；可以直接跳到结束 ——
+@before_model(can_jump_to=["end"])
+def check_message_limit(state: AgentState, runtime: Runtime) -&gt; dict[str, Any] | None:
+    if len(state["messages"]) &gt;= 50:
+        return {"messages": [AIMessage("Conversation limit reached.")],
+                "jump_to": "end"}                 # 不再调用模型，直接结束
+    return None                                   # 返回 None = 什么都不改，继续
+
+# —— 「包裹」型：拿到请求和「真正干活的函数」，自己决定怎么调 ——
+@wrap_tool_call
+def monitor_tool(
+    request: ToolCallRequest,
+    handler: Callable[[ToolCallRequest], ToolMessage | Command],
+) -&gt; ToolMessage | Command:
+    print(f"Executing tool: {request.tool_call['name']}  args: {request.tool_call['args']}")
+    result = handler(request)                     # 调用真正的工具
+    print("Tool completed successfully")
+    return result
+
+agent = create_agent(
+    model="openai:gpt-4.1-mini",
+    tools=[search_travel_info, weather_forecast],
+    middleware=[check_message_limit, monitor_tool],
+)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { createAgent, createMiddleware, AIMessage } from "langchain";
+
+// —— 「之前 / 之后」型：读状态，返回更新；可以直接跳到结束 ——
+const messageLimitMiddleware = createMiddleware({
+  name: "MessageLimitMiddleware",
+  beforeModel: {
+    canJumpTo: ["end"],
+    hook: (state) =&gt; {
+      if (state.messages.length &gt;= 50) {
+        return { messages: [new AIMessage("Conversation limit reached.")],
+                 jumpTo: "end" };               // 不再调用模型，直接结束
+      }
+      return;                                   // 什么都不改，继续
+    },
+  },
+});
+
+// —— 「包裹」型：拿到请求和「真正干活的函数」，自己决定怎么调 ——
+const toolMonitoringMiddleware = createMiddleware({
+  name: "ToolMonitoringMiddleware",
+  wrapToolCall: (request, handler) =&gt; {
+    console.log(`Executing tool: ${request.toolCall.name}`,
+                JSON.stringify(request.toolCall.args));
+    const result = handler(request);            // 调用真正的工具
+    console.log("Tool completed successfully");
+    return result;
+  },
+});
+
+const agent = createAgent({
+  model: "openai:gpt-4.1-mini",
+  tools: [searchTravelInfo, weatherForecast],
+  middleware: [messageLimitMiddleware, toolMonitoringMiddleware],
+});
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// Java 里要在「模型调用前后」插入逻辑，用第 7 章见过的 ChatModelListener；
+// 要在「工具调用前后」插入逻辑，最直接的办法是给工具对象包一层。
+public class MonitoredTravelTools {
+    private final TravelTools delegate;
+    public MonitoredTravelTools(TravelTools delegate) { this.delegate = delegate; }
+
+    @Tool("Search travel information about destinations in England.")
+    public String searchTravelInfo(@P("What to search for") String query) {
+        System.out.println("Executing tool: searchTravelInfo  args: " + query);
+        String result = delegate.searchTravelInfo(query);      // 调用真正的工具
+        System.out.println("Tool completed successfully");
+        return result;
+    }
+}
+
+// 「对话太长就直接结束」这类检查，写在调用 AI Service 之前的普通代码里即可：
+//   if (memory.messages().size() &gt;= 50) return "Conversation limit reached.";
+</pre>
+</div>
+</div>
+
+<div class="box key">
+  <div class="t">&#128273; 中间件改变了「定制智能体」的方式</div>
+  <p>
+    以前想在循环里加一步（比如审批），得放弃预置智能体、自己手写整张图。现在多数定制只需要<strong>往列表里加一个中间件</strong>。
+    本章前面手写的图仍然值得学 —— 它告诉你中间件挂在什么上面；但真正动手时，先看有没有现成的中间件能用。
+    顺带一提：第 14 章用到的 <code>pre_model_hook</code>，在新写法里对应的就是 <code>before_model</code> 中间件。
+  </p>
 </div>
 
 <h2 id="debug">调试智能体</h2>
@@ -893,6 +1151,7 @@ System.out.println(travelInfoAgent.chat("Suggest two Cornwall beach towns with n
   <li>状态是一个<strong>只追加</strong>的消息列表（reducer）。四种消息：Human、AI（可带 tool_calls）、Tool、System。</li>
   <li>加工具只需往列表里添一项；用系统消息引导模型「只用工具获取信息」，可以减少幻觉。</li>
   <li><code>create_react_agent</code>（Java 里是带 <code>tools</code> 的 AI Service）把这一切打包成几行代码。</li>
+  <li>当前的标准入口是 <code>create_agent</code>；<strong>中间件</strong>在循环的六个固定位置插入逻辑，限流、重试、摘要、人工审批等都有内置实现。</li>
 </ul>
 
 <div class="exercise">
